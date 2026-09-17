@@ -1,5 +1,8 @@
 <h1 align="center">ChatGPT Web for Codex</h1>
 
+> **安全加固分支：** 本分支改进浏览器连接鉴权、本地 API 访问和数据保留。在包含这些修改的分支版本发布前，请从已审查的源码构建；上游安装包不包含这些修改。详见[安全加固与升级说明](docs/security-hardening.md)。
+
+
 <p align="center">
   <strong>将 ChatGPT Web（包括 Pro）作为 Codex 原生模型使用。</strong><br>
   切换模型档位，保留原有工作流。
@@ -14,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Gao327/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/Gao327/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-black?logo=apple" alt="macOS arm64 and x64">
   <img src="https://img.shields.io/badge/Windows-x64-0078d4?logo=windows11" alt="Windows x64">
@@ -69,16 +72,23 @@ Codex 会保留原生任务、上下文生命周期、界面和工具 harness。
 安装或更新桌面启动器。若要更新或修复现有安装，请先退出启动器，然后再次运行同一条命令；它会
 替换应用程序和内置运行时，同时保留 ChatGPT 配置文件和启动器配置。
 
+本分支的应用与核心运行时只允许从 **Gao327/codex-chatgpt-web** 更新。你的 fork 没有可用发布时，
+更新会停止，不会回退到原作者仓库。发布或安装未来版本前仍需审查其中的改动。
+详见[更新信任边界](docs/security-hardening.md)。
+
+请在已经检出并审查过的 **Gao327/codex-chatgpt-web** 源码根目录执行以下命令。
+命令运行本地安装脚本，由该脚本先检查发布来源，再下载安装包。
+
 **macOS 或 Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+sh scripts/install-launcher.sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+& .\scripts\install-launcher.ps1
 ```
 
 然后在应用中完成三项检查：
@@ -98,7 +108,7 @@ Chrome/Chromium、系统级 Node/Bun，也不会由本项目另行下载浏览�
 **从源码运行**
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
+git clone https://github.com/Gao327/codex-chatgpt-web.git && \
 cd codex-chatgpt-web && \
 bun run app
 ```
@@ -148,8 +158,9 @@ bun run app
 ## 日常操作
 
 使用 **活动** 页面查看安全的本地诊断，并通过 **设置 → 运行诊断** 执行端到端健康检查。设置页还可
-取消保留的浏览器任务，或在卸载前移除 Codex 集成。仅在需要为每个浏览器检查点保存截图时设置
-`CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1`。
+取消保留的浏览器任务，或在卸载前移除 Codex 集成。截图和页面内容诊断默认关闭，包括失败或卡住时的采集。
+仅在有意开展诊断时设置 `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1`；图片与文字可能包含私人聊天或账号信息。
+参见[数据保留与升级说明](docs/security-hardening.md)。
 
 新安装默认使用 **Compatibility V1** 以支持跨后端 subagent。**Native** 会保留 Codex 自身的
 功能设置，并启用明文 Web-to-Web V2 委派。切换协议后，请重启 Codex 并创建新任务：
