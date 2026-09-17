@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { atomicWriteFile } from "../../config";
 import { estimateTokens } from "../../lib/token-estimate";
 import { parseRequest } from "../../responses/parser";
 import type { CodexParsedRequest } from "../../types";
@@ -43,11 +41,6 @@ interface StoredChatGptLunaCheckpoint extends CapturedChatGptLunaCheckpoint {
   threadId: string;
   sourceTurnId: string;
   updatedAt: number;
-}
-
-interface StoredChatGptLunaCheckpointFile {
-  version: 1;
-  checkpoints: StoredChatGptLunaCheckpoint[];
 }
 
 const MAX_STORED_CHECKPOINTS = 512;
@@ -239,34 +232,12 @@ function checkpointContext(checkpoint: ChatGptLunaCheckpoint): string {
   ].join("\n");
 }
 
-function validateStoredCheckpoint(value: unknown): StoredChatGptLunaCheckpoint {
-  const parsed = record(value);
-  if (!parsed
-    || typeof parsed.threadId !== "string"
-    || typeof parsed.sourceTurnId !== "string"
-    || typeof parsed.answerHash !== "string"
-    || !/^[a-f0-9]{64}$/.test(parsed.answerHash)
-    || typeof parsed.updatedAt !== "number") {
-    throw new Error("Invalid persisted ChatGPT Luna checkpoint metadata");
-  }
-  return {
-    threadId: parsed.threadId,
-    sourceTurnId: parsed.sourceTurnId,
-    answerHash: parsed.answerHash,
-    checkpoint: parseChatGptLunaCheckpoint(parsed.checkpoint),
-    updatedAt: parsed.updatedAt,
-  };
-}
-
-/** Exact-parent, per-thread checkpoint store. Full Codex history remains canonical on mismatch. */
+/** Memory-only exact-parent checkpoints. A later store:true must never persist a private ancestor.
+ * Full Codex history remains canonical after a restart, expiry, or parent mismatch. */
 export class ChatGptLunaCheckpointStore {
-  private loaded = false;
   private readonly checkpoints = new Map<string, StoredChatGptLunaCheckpoint>();
 
-  constructor(
-    private readonly path?: string,
-    private readonly now: () => number = Date.now,
-  ) {}
+  constructor(private readonly now: () => number = Date.now) {}
 
   apply(parsed: CodexParsedRequest): { parsed: CodexParsedRequest; applied: boolean; reason?: string } {
     const identity = extractChatGptTurnIdentity(parsed);
@@ -321,7 +292,6 @@ export class ChatGptLunaCheckpointStore {
     if (captured.answerHash !== answerHash) {
       throw new Error("ChatGPT Luna rolling checkpoint answer hash does not match the completed browser answer");
     }
-    this.load();
     const stored: StoredChatGptLunaCheckpoint = {
       threadId: identity.threadId,
       sourceTurnId: identity.turnId,
@@ -333,11 +303,9 @@ export class ChatGptLunaCheckpointStore {
     this.checkpoints.delete(key);
     this.checkpoints.set(key, stored);
     this.prune();
-    this.persist();
   }
 
   private get(threadId: string, answerHash: string): StoredChatGptLunaCheckpoint | undefined {
-    this.load();
     this.prune();
     return this.checkpoints.get(checkpointKey(threadId, answerHash));
   }
@@ -352,32 +320,5 @@ export class ChatGptLunaCheckpointStore {
       if (!oldest) break;
       this.checkpoints.delete(oldest);
     }
-  }
-
-  private load(): void {
-    if (this.loaded) return;
-    this.loaded = true;
-    if (!this.path || !existsSync(this.path)) return;
-    const payload = JSON.parse(readFileSync(this.path, "utf8")) as Partial<StoredChatGptLunaCheckpointFile>;
-    if (payload.version !== 1 || !Array.isArray(payload.checkpoints)) {
-      throw new Error(`Invalid ChatGPT Luna checkpoint store: ${this.path}`);
-    }
-    const checkpoints = payload.checkpoints
-      .map(validateStoredCheckpoint)
-      .sort((left, right) => left.updatedAt - right.updatedAt)
-      .slice(-MAX_STORED_CHECKPOINTS);
-    for (const checkpoint of checkpoints) {
-      this.checkpoints.set(checkpointKey(checkpoint.threadId, checkpoint.answerHash), checkpoint);
-    }
-    this.prune();
-  }
-
-  private persist(): void {
-    if (!this.path) return;
-    const payload: StoredChatGptLunaCheckpointFile = {
-      version: 1,
-      checkpoints: [...this.checkpoints.values()],
-    };
-    atomicWriteFile(this.path, `${JSON.stringify(payload, null, 2)}\n`);
   }
 }

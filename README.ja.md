@@ -1,5 +1,8 @@
 <h1 align="center">Codex 用 ChatGPT Web</h1>
 
+> **セキュリティ強化フォーク：** ブラウザー接続の認証、ローカル API、データ保存を改善しています。変更を含むリリースが公開されるまでは、レビュー済みのソースからビルドしてください。上流の配布版にはこの変更は含まれません。[変更とアップグレードの注意点](docs/security-hardening.md)を参照してください。
+
+
 <p align="center">
   <strong>ChatGPT Web（Pro を含む）を Codex のネイティブモデルとして使用。</strong><br>
   モデルの利用枠を切り替えて、いつものワークフローを維持できます。
@@ -14,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Gao327/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/Gao327/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT ライセンス"></a>
   <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-black?logo=apple" alt="macOS arm64 および x64">
   <img src="https://img.shields.io/badge/Windows-x64-0078d4?logo=windows11" alt="Windows x64">
@@ -74,16 +77,24 @@ Full モードでは、次のコンパクション境界まで、MCP が ChatGPT
 ランチャーを終了して同じコマンドをもう一度実行してください。ChatGPT プロファイルとランチャー設定を保持したまま、
 アプリケーションと内蔵ランタイムが置き換えられます。
 
+このフォークのアプリケーションとランタイムは **Gao327/codex-chatgpt-web** からのみ更新します。
+利用可能なリリースがない場合は停止し、元のリポジトリへフォールバックしません。
+今後のリリースも公開・インストール前に変更を確認してください。
+詳細は[更新元の信頼ポリシー](docs/security-hardening.md)を参照してください。
+
+以下のコマンドは、チェックアウトしてレビュー済みの **Gao327/codex-chatgpt-web** のソースルートで
+実行してください。ローカルのインストーラが更新元を検証してからパッケージをダウンロードします。
+
 **macOS または Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+sh scripts/install-launcher.sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+& .\scripts\install-launcher.ps1
 ```
 
 アプリ内で次の 3 項目を完了します。
@@ -104,7 +115,7 @@ Free/Go アカウントでは Luna のみが表示され、Pro はサインイ�
 **ソースから実行**
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
+git clone https://github.com/Gao327/codex-chatgpt-web.git && \
 cd codex-chatgpt-web && \
 bun run app
 ```
@@ -157,8 +168,9 @@ ChatGPT のツール呼び出しを現在の Codex タスクへ接続します�
 
 安全なローカル診断には **アクティビティ**、エンドツーエンドのヘルスチェックには
 **設定 → 診断を実行**を使用します。設定から、保持中のブラウザーターンのキャンセルや、
-アンインストール前の Codex 統合削除も行えます。すべてのブラウザーチェックポイントでスクリーンショットが必要な場合にのみ、
-`CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` を設定してください。
+アンインストール前の Codex 統合削除も行えます。スクリーンショットとページ内容の診断記録は、失敗・停止時を含め既定で無効です。
+診断が必要な場合にのみ `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` を設定してください。画像やテキストには個人のチャットやアカウント情報が含まれる場合があります。
+[データ保持とアップグレードの説明](docs/security-hardening.md)も参照してください。
 
 新規インストールでは、クロスバックエンドのサブエージェントに **Compatibility V1** を使用します。
 **Native** は Codex 独自の機能設定を維持し、プレーンテキストの Web-to-Web V2 delegation を有効にします。

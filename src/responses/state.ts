@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicWriteFile, getConfigDir } from "../config";
 
@@ -17,6 +17,8 @@ const SNAPSHOT_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
 interface StoredResponseState {
   createdAt: number;
   items: unknown[];
+  /** Only explicitly stored responses without memory-only ancestors may reach disk. */
+  persist: boolean;
   /** Approximate in-memory size, computed locally at insert time (never trusted from disk). */
   sizeBytes?: number;
 }
@@ -56,8 +58,10 @@ function deleteEntry(id: string): void {
 // upstream. Consumers use the prefix length to bind trusted history and rolling checkpoints to the
 // exact replayed portion of this request.
 const replayedInputPrefixLengths = new WeakMap<object, number>();
+const memoryOnlyReplays = new WeakSet<object>();
 let loaded = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let expiryTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingPersistPath: string | null = null;
 
 function now(): number {
@@ -69,35 +73,43 @@ function snapshotPath(): string {
 }
 
 /**
- * Best-effort disk snapshot so previous_response_id chains survive a proxy restart (the
- * dominant expansion-miss cause: an in-memory-only store dies with the process, and the next
- * chained turn then reaches the upstream as a naked delta). Load is lazy on first store access;
+ * Explicit store:true chains may survive a proxy restart. All other continuation state stays
+ * in memory, including forced store:false state. Load is lazy on first store access;
  * persistence is debounced + unref'd so the hot path never blocks and the process can exit.
  * Every disk failure is swallowed — the snapshot is a cache, not a source of truth.
  */
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  const path = snapshotPath();
   try {
-    const path = snapshotPath();
     if (!existsSync(path)) return;
     const raw = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; states?: unknown };
-    if (raw.version !== 1 || !Array.isArray(raw.states)) return;
+    // Version 1 did not record storage consent and may contain store:false conversations.
+    if (raw.version !== 2 || !Array.isArray(raw.states)) {
+      rmSync(path, { force: true });
+      return;
+    }
     for (const entry of raw.states) {
       if (!Array.isArray(entry) || entry.length !== 2) continue;
       const [id, state] = entry as [unknown, unknown];
       if (typeof id !== "string" || !state || typeof state !== "object") continue;
       const rec = state as StoredResponseState;
-      if (typeof rec.createdAt !== "number" || !Array.isArray(rec.items)) continue;
+      if (!Number.isFinite(rec.createdAt) || rec.createdAt > now()
+        || !Array.isArray(rec.items) || rec.persist !== true) continue;
       // Recompute sizes locally while loading; persisted sizeBytes is never trusted.
       setEntry(id, {
         createdAt: rec.createdAt,
         items: rec.items,
+        persist: true,
       });
     }
     pruneResponses();
+    // Remove expired or invalid content from disk as well as memory on restart.
+    persistNow(path);
   } catch {
-    /* missing/corrupt snapshot: start empty */
+    // Corrupt snapshots can still contain sensitive content; do not retain an unreadable cache.
+    try { rmSync(path, { force: true }); } catch { /* best-effort */ }
   }
 }
 
@@ -107,6 +119,7 @@ function persistNow(path: string): void {
     persistTimer = null;
   }
   pendingPersistPath = null;
+  pruneResponses();
   try {
     const entries: [string, StoredResponseState][] = [];
     let total = 0;
@@ -114,6 +127,7 @@ function persistNow(path: string): void {
     for (const entry of [...states].reverse()) {
       // sizeBytes is in-memory accounting only; keep it out of the disk snapshot.
       const [id, state] = entry;
+      if (!state.persist) continue;
       const { sizeBytes: _sizeBytes, ...persistable } = state;
       const persistEntry: [string, StoredResponseState] = [id, persistable];
       const size = JSON.stringify(persistEntry).length;
@@ -123,14 +137,35 @@ function persistNow(path: string): void {
       entries.push(persistEntry);
     }
     entries.reverse();
+    if (entries.length === 0) {
+      rmSync(path, { force: true });
+      return;
+    }
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     // mkdirSync's mode only applies on creation — re-harden an existing config dir so the
     // conversation-content snapshot never lands in a group/world-readable directory.
     try { chmodSync(dirname(path), 0o700); } catch { /* best-effort (e.g. Windows) */ }
-    atomicWriteFile(path, JSON.stringify({ version: 1, states: entries }));
+    atomicWriteFile(path, JSON.stringify({ version: 2, states: entries }));
   } catch {
     /* best-effort: disk trouble must never affect request handling */
+  } finally {
+    scheduleExpiry(path);
   }
+}
+
+/** Delete expired content while the process runs, even when no new requests arrive.
+ * A stopped process cannot delete files; the next load removes anything that expired offline. */
+function scheduleExpiry(path: string): void {
+  if (expiryTimer) clearTimeout(expiryTimer);
+  expiryTimer = null;
+  if (states.size === 0) return;
+  let expiresAt = Infinity;
+  for (const state of states.values()) expiresAt = Math.min(expiresAt, state.createdAt + RESPONSE_TTL_MS);
+  expiryTimer = setTimeout(() => {
+    expiryTimer = null;
+    persistNow(path);
+  }, Math.max(1, expiresAt - now()));
+  (expiryTimer as { unref?: () => void }).unref?.();
 }
 
 function schedulePersist(): void {
@@ -157,9 +192,10 @@ function inputItems(input: unknown): unknown[] {
   return [input];
 }
 
-function pruneResponses(at = now()): void {
+function pruneResponses(at = now()): boolean {
+  const initialSize = states.size;
   for (const [id, state] of states) {
-    if (at - state.createdAt > RESPONSE_TTL_MS) deleteEntry(id);
+    if (at - state.createdAt >= RESPONSE_TTL_MS) deleteEntry(id);
   }
   while (states.size > MAX_STORED_RESPONSES) {
     const oldest = states.keys().next().value;
@@ -172,6 +208,7 @@ function pruneResponses(at = now()): void {
     if (!oldest) break;
     deleteEntry(oldest);
   }
+  return states.size !== initialSize;
 }
 
 export function expandPreviousResponseInput(body: unknown): unknown {
@@ -180,7 +217,7 @@ export function expandPreviousResponseInput(body: unknown): unknown {
   const previousId = typeof request.previous_response_id === "string" ? request.previous_response_id : undefined;
   if (!previousId) return body;
   ensureLoaded();
-  pruneResponses();
+  if (pruneResponses()) persistNow(snapshotPath());
   const previous = states.get(previousId);
   if (!previous) return body;
   const expanded = {
@@ -188,6 +225,7 @@ export function expandPreviousResponseInput(body: unknown): unknown {
     input: [...previous.items, ...inputItems(request.input)],
   };
   replayedInputPrefixLengths.set(expanded, previous.items.length);
+  if (!previous.persist) memoryOnlyReplays.add(expanded);
   return expanded;
 }
 
@@ -210,9 +248,9 @@ export function rememberResponseState(
   const request = requestBody as Record<string, unknown>;
   // `force` bypasses only the store:false skip: Codex sends `store:false` on every non-Azure
   // HTTP request (and WS inherits it), yet its WS turns still chain with previous_response_id.
-  // The passthrough branch records with force so those chains can be expanded locally; the
-  // store stays in-memory with a 1h TTL, so this is a proxy-internal continuation cache, not
-  // real server-side response storage.
+  // The passthrough branch records with force so those chains can be expanded locally.
+  // Force never permits persistence: only explicit store:true without a memory-only ancestor
+  // reaches disk. Both caches expire after 1h while running; disk cleanup also runs on load.
   if (request.store === false && !opts?.force) return;
   if (typeof response.id !== "string" || !Array.isArray(response.output)) return;
   if (response.status === "incomplete") {
@@ -221,9 +259,13 @@ export function rememberResponseState(
       || (details as { reason?: unknown }).reason !== "max_output_tokens") return;
   } else if (response.status !== undefined && response.status !== "completed") return;
   ensureLoaded();
+  const previous = typeof request.previous_response_id === "string"
+    ? states.get(request.previous_response_id)
+    : undefined;
   setEntry(response.id, {
     createdAt: now(),
     items: [...inputItems(request.input), ...response.output],
+    persist: request.store === true && !memoryOnlyReplays.has(request) && previous?.persist !== false,
   });
   pruneResponses();
   schedulePersist();

@@ -1,5 +1,8 @@
 <h1 align="center">ChatGPT Web for Codex</h1>
 
+> **Security hardening fork:** This fork changes browser authentication, local API access, and local data retention. Build from this reviewed source checkout until a fork release containing these changes is published. Upstream binaries do not include these changes. See [security hardening and upgrade notes](docs/security-hardening.md).
+
+
 <p align="center">
   <strong>Use ChatGPT Web (including Pro) as native Codex models.</strong><br>
   Change the model tier, save your workflow.
@@ -14,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Gao327/codex-chatgpt-web/actions/workflows/ci.yml"><img src="https://github.com/Gao327/codex-chatgpt-web/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-black?logo=apple" alt="macOS arm64 and x64">
   <img src="https://img.shields.io/badge/Windows-x64-0078d4?logo=windows11" alt="Windows x64">
@@ -75,16 +78,23 @@ Install or update the desktop launcher. To update or repair an existing installa
 launcher and run the same command again; it replaces the application and embedded runtime while
 preserving the ChatGPT profile and launcher configuration.
 
+This fork accepts application and runtime updates only from **Gao327/codex-chatgpt-web**. If that
+fork has no usable release, updating stops; there is no upstream fallback. Review future fork
+releases before publishing or installing them. See the [update trust policy](docs/security-hardening.md).
+
+Run the commands below from the root of your checked-out, reviewed **Gao327/codex-chatgpt-web**
+source. They execute the local installer, which checks the release source before downloading.
+
 **macOS or Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+sh scripts/install-launcher.sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+& .\scripts\install-launcher.ps1
 ```
 
 Then complete the three checks in the app:
@@ -105,7 +115,7 @@ model API key, installed Chrome/Chromium, system Node/Bun, or project-managed br
 **Run from source**
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
+git clone https://github.com/Gao327/codex-chatgpt-web.git && \
 cd codex-chatgpt-web && \
 bun run app
 ```
@@ -163,7 +173,9 @@ that option clicks **Allow once**, never a permanent grant.
 
 Use **Activity** for safe local diagnostics and **Settings → Run doctor** for end-to-end health.
 Settings can also cancel a retained browser turn or remove the Codex integration before uninstall.
-Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
+Screenshots and page-content diagnostics are off by default, including failure and stall captures. Set
+`CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only for a deliberate diagnostic session; images and text may
+contain private chats or account details. See [retention and upgrade notes](docs/security-hardening.md).
 
 New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own
 feature settings and enables plaintext Web-to-Web V2 delegation. Restart Codex and start a new task

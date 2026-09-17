@@ -1,15 +1,45 @@
 #!/bin/sh
 set -eu
 
-REPOSITORY="${CODEX_WEB_GPT_REPOSITORY:-miuuyy/codex-chatgpt-web}"
+REPOSITORY="Gao327/codex-chatgpt-web"
+if [ -n "${CODEX_WEB_GPT_REPOSITORY:-}" ] && [ "$CODEX_WEB_GPT_REPOSITORY" != "$REPOSITORY" ]; then
+  echo "Updates are locked to $REPOSITORY; repository overrides are forbidden" >&2
+  exit 1
+fi
 VERSION="${CODEX_WEB_GPT_VERSION:-}"
 OS="$(uname -s)"
 MACHINE="$(uname -m)"
 
-if ! printf '%s\n' "$REPOSITORY" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
-  echo "Invalid GitHub repository: $REPOSITORY" >&2
-  exit 1
-fi
+# Keep this helper self-contained: the installer also runs directly through sh.
+# GitHub may deliver this fork's assets from its CDN, but may not change repositories.
+download_from_fork() (
+  DOWNLOAD_URL="$1"
+  DOWNLOAD_PATH="$2"
+  DOWNLOAD_TIMEOUT="$3"
+  DOWNLOAD_KIND="$4"
+  DOWNLOAD_STATUS="$(curl --disable --fail --silent --show-error \
+    --retry 3 --retry-all-errors --connect-timeout 15 --max-time "$DOWNLOAD_TIMEOUT" \
+    --proto '=https' --max-redirs 0 --dump-header "$DOWNLOAD_PATH.headers" \
+    --output "$DOWNLOAD_PATH" --write-out '%{http_code}' "$DOWNLOAD_URL")" || return 1
+  if [ "$DOWNLOAD_STATUS" = "200" ]; then return 0; fi
+  case "$DOWNLOAD_STATUS:$DOWNLOAD_KIND" in
+    301:asset|302:asset|303:asset|307:asset|308:asset) ;;
+    *) echo "Fork download failed with HTTP $DOWNLOAD_STATUS; repository redirects are forbidden" >&2; return 1 ;;
+  esac
+  DOWNLOAD_REDIRECT="$(awk 'tolower(substr($0, 1, 9)) == "location:" { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); location = $0 } END { print location }' "$DOWNLOAD_PATH.headers")"
+  if ! printf '%s\n' "$DOWNLOAD_REDIRECT" | grep -Eq '^https://release-assets\.githubusercontent\.com/github-production-release-asset/1357573628/[A-Za-z0-9_-]+(\?[^[:space:]#]*)?$'; then
+    echo "Refusing a release redirect outside Gao327/codex-chatgpt-web" >&2
+    return 1
+  fi
+  DOWNLOAD_STATUS="$(curl --disable --fail --silent --show-error \
+    --retry 3 --retry-all-errors --connect-timeout 15 --max-time "$DOWNLOAD_TIMEOUT" \
+    --proto '=https' --max-redirs 0 --output "$DOWNLOAD_PATH" \
+    --write-out '%{http_code}' "$DOWNLOAD_REDIRECT")" || return 1
+  if [ "$DOWNLOAD_STATUS" != "200" ]; then
+    echo "Fork asset download failed with HTTP $DOWNLOAD_STATUS; further redirects are forbidden" >&2
+    return 1
+  fi
+)
 
 case "$OS" in
   Darwin)
@@ -32,11 +62,12 @@ case "$OS" in
   *) echo "Use install-launcher.ps1 on Windows; unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-web-gpt-launcher.XXXXXX")"
+trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
+
 if [ -z "$VERSION" ]; then
-  VERSION="$(curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 \
-    "https://api.github.com/repos/$REPOSITORY/releases/latest" \
-    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' \
-    | head -n 1)"
+  download_from_fork "https://api.github.com/repos/$REPOSITORY/releases/latest" "$TEMP_DIR/release.json" 60 metadata
+  VERSION="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' "$TEMP_DIR/release.json" | head -n 1)"
 fi
 VERSION="${VERSION#v}"
 if [ -z "$VERSION" ]; then
@@ -44,18 +75,13 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 case "$VERSION" in
-  *[!A-Za-z0-9._-]*) echo "Invalid release version: $VERSION" >&2; exit 1 ;;
+  [!0-9]*|*[!A-Za-z0-9._-]*) echo "Invalid release version: $VERSION" >&2; exit 1 ;;
 esac
 
 ASSET="codex-web-gpt-$VERSION-$PLATFORM-$ARCH.$EXTENSION"
 BASE_URL="https://github.com/$REPOSITORY/releases/download/v$VERSION"
-TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-web-gpt-launcher.XXXXXX")"
-trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
-
-curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 900 \
-  "$BASE_URL/$ASSET" -o "$TEMP_DIR/$ASSET"
-curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 \
-  "$BASE_URL/checksums.txt" -o "$TEMP_DIR/checksums.txt"
+download_from_fork "$BASE_URL/$ASSET" "$TEMP_DIR/$ASSET" 900 asset
+download_from_fork "$BASE_URL/checksums.txt" "$TEMP_DIR/checksums.txt" 60 asset
 EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$TEMP_DIR/checksums.txt")"
 if [ "$OS" = "Darwin" ]; then
   ACTUAL="$(shasum -a 256 "$TEMP_DIR/$ASSET" | awk '{ print $1}')"

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   activateCodexIntegration,
   deactivateCodexIntegration,
@@ -18,6 +18,8 @@ import {
   uninstallCodexIntegration,
 } from "../src/codex-integration";
 import { defaultConfig, loadConfig, saveConfig } from "../src/config";
+import { localApiPath, redactLocalApiUrl } from "../src/local-api";
+import { installRoute } from "../src/codex-integration-route";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
   MANAGED_COMMENT,
@@ -59,6 +61,58 @@ afterEach(() => {
 });
 
 describe("reversible native Codex route integration", () => {
+  test("installs a private capability route, redacts status, and upgrades old unauthenticated routes reversibly", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const original = 'model = "gpt-5.6-sol"\n';
+    writeFileSync(configPath, original);
+    const config = nativeConfig("browser-only");
+    saveConfig(config);
+    const journal = installCodexIntegration(config);
+    const authenticatedUrl = journal.installed.openai_base_url;
+    expect(authenticatedUrl).toBe(`http://127.0.0.1:17841${localApiPath(config)}`);
+    expect(authenticatedUrl).not.toContain(config.controlToken);
+    expect(inspectCodexIntegration().routeUrl).toBe("http://127.0.0.1:17841/bridge/[redacted]/v1");
+    const capability = localApiPath(config).split("/")[2]!;
+    expect(redactLocalApiUrl(JSON.stringify({ url: authenticatedUrl }))).not.toContain(capability);
+    const status = inspectCodexIntegration();
+    expect(status.journal).toEqual({ version: 10 });
+    expect(JSON.stringify(status)).not.toContain(capability);
+    for (const command of ["route", "subagents"]) {
+      const cli = Bun.spawnSync([
+        process.execPath, resolve(import.meta.dir, "../src/cli.ts"), command, "status",
+      ], { env: process.env, stdout: "pipe", stderr: "pipe" });
+      expect(cli.exitCode).toBe(0);
+      expect(cli.stdout.toString() + cli.stderr.toString()).not.toContain(capability);
+      expect(cli.stdout.toString() + cli.stderr.toString()).not.toContain(config.controlToken);
+    }
+    let conflict: Error | undefined;
+    try {
+      installRoute(`openai_base_url = ${JSON.stringify(authenticatedUrl)}\n`, authenticatedUrl, false, false);
+    } catch (error) {
+      conflict = error as Error;
+    }
+    expect(conflict?.message).toContain("/bridge/[redacted]/v1");
+    expect(conflict?.message).not.toContain(capability);
+
+    const legacyUrl = "http://127.0.0.1:17841/v1";
+    writeFileSync(configPath, readFileSync(configPath, "utf8").replace(authenticatedUrl, legacyUrl));
+    journal.installed.openai_base_url = legacyUrl;
+    for (const path of [getCodexJournalPath(), getCodexJournalRecoveryPath()]) {
+      writeFileSync(path, JSON.stringify(journal));
+    }
+    expect(activateCodexIntegration()).toEqual({ changed: true, active: true });
+    expect(readFileSync(configPath, "utf8")).toContain(authenticatedUrl);
+    expect(activateCodexIntegration()).toEqual({ changed: false, active: true });
+    const rotated = { ...config, controlToken: defaultConfig().controlToken };
+    saveConfig(rotated);
+    expect(activateCodexIntegration()).toEqual({ changed: true, active: true });
+    expect(readFileSync(configPath, "utf8")).toContain(localApiPath(rotated));
+    expect(readFileSync(configPath, "utf8")).not.toContain(capability);
+    expect(uninstallCodexIntegration()).toEqual({ changed: true });
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+
   test("expands a configured tilde Codex home consistently with launcher paths", () => {
     process.env.CODEX_HOME = "~/custom-codex-home";
     expect(getCodexHome()).toBe(join(homedir(), "custom-codex-home"));
@@ -89,7 +143,7 @@ describe("reversible native Codex route integration", () => {
     const journal = installCodexIntegration(nativeConfig("browser-only"));
     const installed = readFileSync(configPath, "utf8");
     expect(journal.version).toBe(10);
-    expect(installed).toContain('openai_base_url = "http://127.0.0.1:17841/v1"');
+    expect(installed).toMatch(/openai_base_url = "http:\/\/127\.0\.0\.1:17841\/bridge\/[A-Za-z0-9_-]{43}\/v1"/);
     expect(installed).toContain(
       `experimental_realtime_webrtc_call_base_url = ${JSON.stringify(CODEX_REALTIME_WEBRTC_CALL_BASE_URL)}`,
     );
@@ -129,7 +183,7 @@ describe("reversible native Codex route integration", () => {
     expect(installed).toContain("multi_agent = false # native choice");
     expect(installed).toContain("multi_agent_v2 = true # native choice");
     expect(journal.installed).toEqual({
-      openai_base_url: "http://127.0.0.1:17841/v1",
+      openai_base_url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:17841\/bridge\/[A-Za-z0-9_-]{43}\/v1$/),
       experimental_realtime_webrtc_call_base_url: CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
       subagent_protocol: "native",
     });
@@ -593,7 +647,7 @@ describe("reversible native Codex route integration", () => {
     expect(() => installCodexIntegration(config)).toThrow("--replace-codex-route");
     installCodexIntegration(config, { replaceExistingRoute: true });
     const installed = readFileSync(configPath, "utf8");
-    expect(installed).toContain('openai_base_url = "http://127.0.0.1:17841/v1"');
+    expect(installed).toMatch(/openai_base_url = "http:\/\/127\.0\.0\.1:17841\/bridge\/[A-Za-z0-9_-]{43}\/v1"/);
     expect(installed).toContain('model_provider = "existing-provider"');
     expect(installed).toContain('model_catalog_json = "/tmp/native.json"');
 
@@ -652,7 +706,7 @@ describe("reversible native Codex route integration", () => {
     const second = nativeConfig("browser-only");
     second.port = 17842;
     installCodexIntegration(second);
-    expect(readFileSync(configPath, "utf8")).toContain('openai_base_url = "http://127.0.0.1:17842/v1"');
+    expect(readFileSync(configPath, "utf8")).toMatch(/openai_base_url = "http:\/\/127\.0\.0\.1:17842\/bridge\/[A-Za-z0-9_-]{43}\/v1"/);
     uninstallCodexIntegration();
     expect(readFileSync(configPath, "utf8")).toBe('model = "gpt-5.6-sol"\n');
   });
@@ -697,7 +751,7 @@ describe("reversible native Codex route integration", () => {
 
     expect(activateCodexIntegration()).toEqual({ changed: true, active: true });
     const reconnected = readFileSync(configPath, "utf8");
-    expect(reconnected).toContain('openai_base_url = "http://127.0.0.1:17841/v1"');
+    expect(reconnected).toMatch(/openai_base_url = "http:\/\/127\.0\.0\.1:17841\/bridge\/[A-Za-z0-9_-]{43}\/v1"/);
     expect(reconnected).not.toContain("remote_compaction_v2");
     expect(reconnected).not.toContain("multi_agent");
     expect(reconnected).toContain('approval_policy = "never"');

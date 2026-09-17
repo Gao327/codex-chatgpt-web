@@ -24,6 +24,21 @@ test("launcher logs redact tunnel ids, runtime keys, and bearer credentials", ()
   });
 });
 
+test("launcher activity masks local bridge capability paths before recording or truncating diagnostics", () => {
+  const capability = "local-api-secret-0123456789abcdefghijklmnopqr";
+  const url = `http://127.0.0.1:17841/bridge/${capability}/v1/responses`;
+  const detail = sanitize({
+    url,
+    message: `Request failed at ${url}?client_version=1.2.3`,
+    config: `openai_base_url = "http://127.0.0.1:17841/bridge/${capability}/v1"`,
+    long: `${"a".repeat(16 * 1024 - 25)}${url}`,
+  });
+  assert.doesNotMatch(JSON.stringify(detail), /local-api-secret/);
+  assert.equal(detail.url, "http://127.0.0.1:17841/bridge/[redacted]/v1/responses");
+  assert.match(detail.message, /\[redacted\]/);
+  assert.match(detail.config, /\[redacted\]/);
+});
+
 test("failed launcher IPC calls are written to runtime activity", async () => {
   let registered;
   const errors = [];

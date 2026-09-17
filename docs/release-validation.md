@@ -7,6 +7,11 @@ flows are exercised manually on the platforms below.
 
 ## Required evidence
 
+Publish application and runtime releases only from `Gao327/codex-chatgpt-web`. The release workflow
+refuses other repositories, and the updater/installers must fail when this fork has no usable
+release; they must never fall back to upstream. Review each imported change before creating a
+release tag. Passing checksums and source restrictions does not certify the safety of new code.
+
 Record the release version, operating-system version, install path (`clean` or `upgrade`), ChatGPT
 plan, Codex version, result of each check, and a redacted Activity log for every failure. Never
 capture cookies, tunnel IDs, API keys, bearer tokens, or prompt contents.

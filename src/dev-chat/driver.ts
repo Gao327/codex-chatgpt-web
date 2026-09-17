@@ -397,7 +397,6 @@ export function createLauncherDevAdapter(
       ...(browserHelperScriptPath ? { browserHelperScriptPath } : {}),
       browserDiagnosticsPath: join(runtimeStateRoot, "diagnostics", "browser-turns"),
       threadEnvironmentStatePath: join(runtimeStateRoot, "thread-environments.json"),
-      lunaCheckpointStatePath: join(runtimeStateRoot, "luna-checkpoints.json"),
       turnTimeoutMs: 60 * 60_000,
       ...(config.experimentalBiggerContext
         ? { experimentalBiggerContext: true }

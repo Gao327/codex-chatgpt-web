@@ -36,6 +36,7 @@ import {
   type CapturedChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
 import { ChatGptExternalTurnProgress } from "./turn-progress";
+import { chatGptWebToolChoiceError } from "./tool-choice";
 import {
   canonicalizeCompactionHandoff,
   existingStructuredCompactionRun,
@@ -370,11 +371,7 @@ export function createChatGptWebAdapter(
       ? resolve(expandUserPath(provider.chatgptWeb.threadEnvironmentStatePath))
       : undefined,
   );
-  const lunaCheckpointStore = new ChatGptLunaCheckpointStore(
-    provider.chatgptWeb?.lunaCheckpointStatePath
-      ? resolve(expandUserPath(provider.chatgptWeb.lunaCheckpointStatePath))
-      : undefined,
-  );
+  const lunaCheckpointStore = new ChatGptLunaCheckpointStore();
   const currentUsageInput = (parsed: CodexParsedRequest): CodexParsedRequest => (
     parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID && !parsed._compactionRequest
       ? lunaCheckpointStore.apply(parsed).parsed
@@ -780,6 +777,18 @@ export function createChatGptWebAdapter(
     name: "chatgpt-web",
     async runTurn(parsed, incoming, emit) {
       const runChatGptWebTurn = async (): Promise<void> => {
+        const toolChoiceError = chatGptWebToolChoiceError(parsed);
+        if (toolChoiceError) {
+          emit({
+            type: "error",
+            message: toolChoiceError.message,
+            status: toolChoiceError.status,
+            errorType: toolChoiceError.errorType,
+            code: toolChoiceError.code,
+            retryable: false,
+          });
+          return;
+        }
         const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
         if (manualRequest !== manualInteraction) {
           emit({

@@ -213,9 +213,16 @@ launcher error.
 ## Security invariants
 
 - Bind the Responses proxy and health endpoint to loopback only.
+- Require the installation's private URL capability for Responses routes and reject browser origins
+  and unexpected Host headers.
 - Store browser state and tunnel credentials under the application home with mode `0600`.
 - Protect lifecycle control endpoints with a random application-owned bearer token.
-- Never place secret values in command-line arguments, logs, generated profiles, or Git.
+- Use authenticated, page-scoped Electron debugger transport; never open raw Chromium debugging.
+- Keep control tokens out of command-line arguments, logs, and Git. The local Responses URL is a
+  credential stored in private Codex configuration/journals; redact it from shared client logs.
+- Persist response continuation only with explicit storage consent, and capture browser diagnostic
+  screenshots only with explicit opt-in.
+- Reject unsupported restrictive tool choices before invoking the ChatGPT adapter.
 - Limit browser turns to five independent task-bound tabs and reject unsupported models explicitly.
   The selected routed model fixes the adapter effort; a conflicting request effort cannot change it.
 - Do not retry or switch modes to evade product usage limits.

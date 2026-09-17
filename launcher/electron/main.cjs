@@ -1,5 +1,4 @@
 const fs = require("node:fs");
-const net = require("node:net");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
@@ -15,8 +14,14 @@ const {
   shell,
   Tray,
 } = require("electron");
+// Remove these synchronously, before any await can let Chromium open a debug listener.
+app.commandLine.removeSwitch("remote-debugging-address");
+app.commandLine.removeSwitch("remote-debugging-port");
+app.commandLine.removeSwitch("remote-debugging-pipe");
+
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
+const { AuthenticatedCdpServer } = require("./authenticated-cdp.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const {
   createLogger,
@@ -50,7 +55,7 @@ const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browse
 const BROWSER_HELPER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
   : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
-const GITHUB_URL = "https://github.com/miuuyy/codex-chatgpt-web";
+const GITHUB_URL = "https://github.com/Gao327/codex-chatgpt-web";
 const X_URL = "https://x.com/miu21590";
 const CONNECTORS_URL = "https://chatgpt.com/#settings/Plugins";
 const TUNNELS_URL = "https://platform.openai.com/settings/organization/tunnels";
@@ -86,24 +91,11 @@ let quitting = false;
 let shutdownInProgress = false;
 let exitCommitted = false;
 let smokePassedThisSession = false;
-let cdpPort = 0;
+let browserDebugging = null;
 let lastOperation = null;
 let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
 let updateController = null;
-
-function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = address && typeof address === "object" ? address.port : 0;
-      server.close((error) => error ? reject(error) : resolve(port));
-    });
-  });
-}
 
 function send(channel, value) {
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
@@ -357,7 +349,9 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
   window.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
-    if (stateStore.read().keepRunningOnClose && tray) window.hide();
+    const current = stateStore.read();
+    // Until setup finishes, closing must exit rather than hide an unfinished login in the tray.
+    if (current.coreSetupComplete === true && current.keepRunningOnClose && tray) window.hide();
     else void requestQuit();
   });
   window.on("closed", () => {
@@ -382,7 +376,7 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
       message: error instanceof Error ? error.message : String(error),
     });
   });
-  logger.info("launcher.window_created", { platform: process.platform, cdpPort });
+  logger.info("launcher.window_created", { platform: process.platform });
   return window;
 }
 
@@ -871,7 +865,9 @@ async function requestQuit() {
   }
   shutdownInProgress = true;
   try {
-    const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation();
+    await runtimeHost?.cancelPasskeyLogin();
+    // Protect installation transactions; browser sign-in can be cancelled by closing its views.
+    const activeOperation = runtimeHost?.currentOperation();
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
@@ -881,6 +877,7 @@ async function requestQuit() {
     await browserHost?.persistSession();
     browserHost?.destroy();
     await browserControl?.close();
+    await browserDebugging?.close();
     exitCommitted = true;
     app.quit();
     return { ok: true };
@@ -921,13 +918,9 @@ async function start() {
   };
   installedRuntimeRoot = runtimeRootProvider();
 
-  cdpPort = await findFreePort();
   if (process.platform === "linux") {
     app.commandLine.appendSwitch("class", IS_DEV_PROFILE ? "codex-web-gpt-dev" : "codex-web-gpt");
   }
-  app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
-  app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
-
   await app.whenReady();
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
@@ -1003,10 +996,14 @@ async function start() {
     && stateStore.read().browserInteractionMode !== configuredInteractionMode) {
     stateStore.update({ browserInteractionMode: configuredInteractionMode });
   }
+  browserDebugging = await new AuthenticatedCdpServer({
+    token: browserControl.token,
+    getWebContents: surfaceId => browserHost?.automationSurface(surfaceId),
+  }).start();
   browserHost = new BrowserHost({
     window: mainWindow,
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
-    cdpPort,
+    cdpPort: browserDebugging.port,
     control: browserControl.descriptor(),
     cancelTurn: IS_DEV_PROFILE ? undefined : traceId => runtimeSupervisor.cancelBrowserTurn(traceId),
     getConnectorName: () => runtimeHost.browserConnectorName(),
@@ -1073,17 +1070,18 @@ async function start() {
       throw new Error("Packaged launcher smoke test requires an absolute CODEX_WEB_GPT_SMOKE_FILE");
     }
     fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-    fs.writeFileSync(markerPath, `${JSON.stringify({
+    app.once("will-quit", () => fs.writeFileSync(markerPath, `${JSON.stringify({
       ok: true,
       version: app.getVersion(),
       platform: process.platform,
       packaged: app.isPackaged,
       runtimeVerified: true,
-    })}\n`);
-    browserHost.destroy();
-    await browserControl.close();
-    mainWindow.destroy();
-    app.quit();
+      signedOutQuitVerified: true,
+    })}\n`));
+    // Exercise the real shutdown path in a fresh profile while sign-in is pending.
+    browserHost.manualOperation = "ChatGPT login";
+    const result = await requestQuit();
+    if (!result.ok) throw new Error(`Signed-out launcher could not quit: ${result.message}`);
     return;
   }
   if (IS_DEV_PROFILE) {
@@ -1113,7 +1111,10 @@ async function start() {
       userData: launcherUserData,
     });
     if (config?.mode === "full") {
-      void startupAuthenticationRefresh.then(() => runtimeSupervisor.startIfConfigured()).catch((error) => {
+      void startupAuthenticationRefresh.then(() => {
+        if (shutdownInProgress || exitCommitted) return;
+        return runtimeSupervisor.startIfConfigured();
+      }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         logger.error("dev_profile.runtime_start_failed", { message });
         const failed = stateStore.update({ mcpSetupComplete: false });
@@ -1122,7 +1123,9 @@ async function start() {
     }
   } else void (async () => {
     await startupAuthenticationRefresh;
+    if (shutdownInProgress || exitCommitted) return;
     const upgrade = await runtimeHost.upgradeManagedRuntime();
+    if (shutdownInProgress || exitCommitted) return;
     if (upgrade.updated) {
       const state = stateStore.update({
         coreSetupComplete: true,
@@ -1160,10 +1163,13 @@ async function start() {
       }
     }
     const runtime = await runtimeSupervisor.startIfConfigured();
+    if (shutdownInProgress || exitCommitted) return;
     if (runtime.status !== "ready") return runtime;
     const route = await runtimeHost.connectBridgeRoute();
+    if (shutdownInProgress || exitCommitted) return;
     return { ...runtime, bridgeRouteChanged: route.changed === true };
   })().then(async (runtime) => {
+    if (!runtime || shutdownInProgress || exitCommitted) return;
     if (runtime.status === "ready") {
       const config = runtimeSupervisor.readConfig();
       const current = stateStore.read();
@@ -1230,6 +1236,7 @@ async function start() {
       });
     }
   }).catch(async (error) => {
+    if (shutdownInProgress || exitCommitted) return;
     const primary = error instanceof Error ? error.message : String(error);
     const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
     const message = routeRecovery.error

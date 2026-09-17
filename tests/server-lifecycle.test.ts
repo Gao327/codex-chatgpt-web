@@ -8,6 +8,7 @@ import { runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compact
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint, defaultConfig, providerConfig } from "../src/config";
+import { localApiPath } from "../src/local-api";
 import { parseRequest } from "../src/responses/parser";
 import { compactRequest, HttpTurnCounter, responseRequest, routeChatGptWebRequest, startServer } from "../src/server";
 
@@ -237,8 +238,8 @@ test("a real HTTP peer disconnect releases a streaming turn", async () => {
     });
     const body = JSON.stringify({ query: "disconnect lifecycle proof" });
     socket.write([
-      "POST /v1/alpha/search HTTP/1.1",
-      "Host: 127.0.0.1",
+      `POST ${localApiPath(config)}/alpha/search HTTP/1.1`,
+      `Host: 127.0.0.1:${port}`,
       "Authorization: Bearer test-codex-session",
       "Content-Type: application/json",
       `Content-Length: ${Buffer.byteLength(body)}`,
@@ -412,7 +413,7 @@ test("authenticated Interrupt hook endpoint releases the exact routed Web turn",
     }),
   });
   const endpoint = `http://127.0.0.1:${server.port}`;
-  const response = fetch(`${endpoint}/v1/responses`, {
+  const response = fetch(`${endpoint}${localApiPath(config)}/responses`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -479,7 +480,7 @@ test("authenticated Interrupt hook endpoint also releases the exact native compa
     }),
   });
   const endpoint = `http://127.0.0.1:${server.port}`;
-  const compactResponse = fetch(`${endpoint}/v1/responses/compact`, {
+  const compactResponse = fetch(`${endpoint}${localApiPath(config)}/responses/compact`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -975,7 +976,7 @@ test("authenticated lifecycle control aborts active HTTP work before acknowledgi
     }),
   });
   const endpoint = `http://127.0.0.1:${server.port}`;
-  const activeRequest = fetch(`${endpoint}/v1/alpha/search`, {
+  const activeRequest = fetch(`${endpoint}${localApiPath(config)}/alpha/search`, {
     method: "POST",
     headers: {
       authorization: "Bearer test-codex-session",
@@ -1094,7 +1095,7 @@ test("a drained runtime rejects new model-catalog work before shutdown", async (
     });
     expect(drain.status).toBe(200);
 
-    const models = await fetch(`${endpoint}/v1/models`);
+    const models = await fetch(`${endpoint}${localApiPath(config)}/models`);
     expect(models.status).toBe(503);
     expect(await models.json()).toMatchObject({
       error: {
@@ -1134,7 +1135,7 @@ test("health proves that Codex received a successful augmented model catalog", a
       last_successful_model_catalog_request_at: null,
     });
 
-    const models = await fetch(`${endpoint}/v1/models`, {
+    const models = await fetch(`${endpoint}${localApiPath(config)}/models`, {
       headers: { authorization: "Bearer test-codex-session" },
     });
     expect(models.status).toBe(200);
@@ -1158,7 +1159,7 @@ test("server exposes authenticated standalone Web Search on the routed v1 base U
   });
   const endpoint = `http://127.0.0.1:${server.port}`;
   try {
-    const response = await fetch(`${endpoint}/v1/alpha/search`, {
+    const response = await fetch(`${endpoint}${localApiPath(config)}/alpha/search`, {
       method: "POST",
       headers: {
         authorization: "Bearer test-codex-session",

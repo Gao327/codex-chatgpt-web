@@ -5,11 +5,11 @@
   "description": "A focused local Responses bridge that runs Codex tasks through a user-authenticated ChatGPT web session.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/miuuyy/codex-chatgpt-web.git"
+    "url": "git+https://github.com/Gao327/codex-chatgpt-web.git"
   },
-  "homepage": "https://github.com/miuuyy/codex-chatgpt-web#readme",
+  "homepage": "https://github.com/Gao327/codex-chatgpt-web#readme",
   "bugs": {
-    "url": "https://github.com/miuuyy/codex-chatgpt-web/issues"
+    "url": "https://github.com/Gao327/codex-chatgpt-web/issues"
   },
   "packageManager": "bun@1.4.0",
   "type": "module",
@@ -49,6 +49,7 @@
     "launcher:audit": "bun run --cwd launcher audit",
     "launcher:typecheck": "bun run --cwd launcher typecheck",
     "launcher:build": "bun run --cwd launcher build",
+    "launcher:smoke-browser": "node launcher/scripts/smoke-browser-transport.cjs",
     "launcher:test": "bun run --cwd launcher test",
     "verify": "bun run scripts/verify.ts"
   },
@@ -75,7 +76,7 @@
   "overrides": {
     "@hono/node-server": "2.0.12",
     "fast-uri": "3.1.6",
-    "hono": "4.12.34",
+    "hono": "4.13.5",
     "qs": "6.16.0",
     "zod-to-json-schema": "3.25.1"
   },

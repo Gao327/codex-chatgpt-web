@@ -8,7 +8,8 @@ created. Repository contents, tool output, websites, and prompt text are untrust
 
 ## Full-mode capability flow
 
-1. The daemon accepts a Codex Responses turn on `127.0.0.1`.
+1. The daemon accepts a Codex Responses turn on `127.0.0.1` only through the installation's secret
+   URL path, with an exact loopback Host and no browser Origin or fetch-site header.
 2. It extracts `cwd`, workspace roots, sandbox policy, and the tool registry only from the native
    Codex wire envelope with matching turn metadata. A user-authored `<environment_context>` is not
    accepted as authority.
@@ -34,6 +35,9 @@ created. Repository contents, tool output, websites, and prompt text are untrust
 The bridge transports decisions; it does not add a second planner, semantic router, or fallback
 model. Every available effort uses the same MCP contract. An unavailable account route, missing
 connector, or missing outer tool fails explicitly instead of becoming an effort-specific exception.
+The ChatGPT adapter rejects restrictive `tool_choice` values before starting a turn, including
+`none`, `required`, named tools, and subsets. It supports only omitted or `auto` selection; it must
+not silently broaden a caller's requested tool restrictions.
 
 The direct turn-token MCP schema is attached only through the `Codex Native2` connector identity.
 The pre-v4 `Codex Native` connector is treated as legacy and is never selected as a fallback. This
@@ -55,6 +59,13 @@ current OS user's private application-data directory and is never copied into a 
 runtime descriptor. Never sync, upload, attach, or commit it. On suspected exposure, sign out or
 revoke the ChatGPT session from the launcher.
 
+Chromium's raw remote-debugging TCP/pipe switches are disabled. Automation instead uses a
+loopback WebSocket gateway with a private bearer key, an exact Host check, no browser Origin, and
+one explicitly owned page surface per connection. It attaches through Electron's in-process
+debugger and denies browser-wide storage/control and unrelated target attachment. Manual mode
+does not expose an automation surface. This closes unauthenticated browser control; the trusted
+launcher and its authenticated runtime can still read and operate the signed-in page.
+
 ### Tunnel credential theft
 
 The runtime key needs only Tunnels Read + Use. It is accepted through a hidden prompt or copied
@@ -63,11 +74,17 @@ argument or generated profile. Rotate it after suspected exposure.
 
 ### Same-user local process
 
-The Responses endpoint is loopback-only, but it has no independent bearer secret because the
-built-in Codex OpenAI provider cannot be configured with a bridge-specific credential while
-preserving the native provider/task identity. Another process under the same OS user can reach the
-port. Run on a trusted single-user account and treat local code execution as inside the trust
-boundary.
+The Responses endpoint is loopback-only and requires an installation-specific URL capability at
+`/bridge/<secret>/v1`. The secret is derived from the private control key using a distinct HMAC
+purpose, so it does not reveal the lifecycle bearer key. This keeps Codex's native Authorization
+header available for official upstream requests. Plain `/v1` access is denied; browser-origin
+requests and unexpected Host values are rejected as well.
+
+Treat this base URL as a password. It is stored in private Codex configuration and reversible
+integration journals. Status output redacts it, but Codex or other clients may log their own base
+URL; redact those logs before sharing. An attacker running as the same OS user can read these
+files or the browser profile. Run on a trusted OS account and treat same-user code execution as
+inside the trust boundary. These controls do not defend against a compromised runtime.
 
 The lifecycle endpoints are separate from the Responses surface. `/admin/drain`, `/admin/resume`,
 `/admin/cancel-turn`, `/admin/cancel-turns`, and `/admin/shutdown` require a random bearer token stored in the
@@ -98,15 +115,31 @@ outer Codex task owns an exact launcher surface lease and retains its Temporary 
 sequential messages in the same model/effort/compaction epoch; chats are never reused across tasks.
 Closing a running tab destroys its page and terminates that turn. The five-tab limit bounds parallel
 account traffic. Tool calls remain in the same ChatGPT response. The
-bounded local continuation cache is private, expires, and exists only to implement Codex
-`previous_response_id` replay. Full-mode context compaction accepts a checkpoint only through its
+bounded local continuation cache exists only to implement Codex `previous_response_id` replay.
+Default and `store:false` continuation state stays in memory; only explicit `store:true` chains
+without memory-only ancestors may be written to the private disk cache. Entries expire after one
+hour. A running process removes expired disk entries; expired data left while stopped is removed
+on the next cache load. Legacy snapshots without storage-consent metadata are discarded on load.
+Disk deletion is best effort and is not secure erasure or backup deletion. This policy covers the
+bridge's response cache, not Codex history, the browser profile, or OpenAI's data handling.
+Full-mode context compaction accepts a checkpoint only through its
 one-shot MCP control capability in the exact retained source chat. If that chat no longer exists, a
 fresh tool-free Temporary Chat receives the canonical Codex history; the bridge never parses ordinary
 assistant prose as a structured handoff.
 
+Luna's separate rolling-checkpoint cache is memory-only, including explicit `store:true` turns.
+A restart or expiry falls back to canonical Codex history. Legacy `luna-checkpoints.json` files are
+not loaded or automatically deleted by this change; review any historical files separately.
+
+Browser screenshots and content diagnostics, including full URLs, titles, UI text, and error
+messages, require explicit `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1`. Opting in may capture private
+account or chat content. Existing diagnostic files are not removed by an upgrade. Default
+diagnostics retain counts, geometry, control state, and fixed error categories.
+
 ## Network exposure
 
 - Responses and health listeners bind to `127.0.0.1` only.
+- Browser automation also binds to `127.0.0.1` and requires a bearer key on HTTP and WebSocket.
 - Full mode uses OpenAI's outbound HTTPS Secure MCP Tunnel; it opens no public listener or inbound
   firewall rule.
 - The embedded browser connects to ChatGPT, the selected identity provider during explicit sign-in,
@@ -117,3 +150,8 @@ assistant prose as a structured handoff.
 - Defending against a compromised local OS user or compromised Codex/Electron binary.
 - Bypassing ChatGPT plan, workspace, usage, action-control, or model restrictions.
 - Making consumer browser automation equivalent to a supported OpenAI API contract.
+- Proving publisher trust or binary provenance from a checksum published with the same release.
+  This fork's updater and installers accept application/runtime releases only from
+  `Gao327/codex-chatgpt-web`, with no upstream fallback. Release CI is restricted to that repository.
+  CI actions are pinned and release-write permissions are limited to publishing, but independent
+  signing and review of each future fork release remain separate.

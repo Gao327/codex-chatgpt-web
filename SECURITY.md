@@ -1,7 +1,8 @@
 # Security policy
 
 Do not open public issues containing ChatGPT cookies, browser storage, tunnel IDs, API keys,
-Codex prompts, tool results, or local filesystem paths. Redact diagnostic bundles before sharing.
+Codex prompts, tool results, local Responses base URLs, or local filesystem paths. Redact diagnostic
+bundles before sharing. A `/bridge/<secret>/v1` URL grants local API access; treat it as a password.
 
 The daemon binds only to loopback. If another local user can access your account or application
 home, treat the browser session and tunnel key as compromised and rotate them.
@@ -9,6 +10,8 @@ home, treat the browser session and tunnel key as compromised and rotate them.
 Read the complete [security model](docs/security-model.md) before enabling full mode. In particular,
 full mode lets an untrusted model response request tools from the current Codex turn; keep connector
 action control, Codex sandboxing, and approvals aligned with the workspace's risk.
+See [hardening and upgrade notes](docs/security-hardening.md) for the protections in this fork,
+intentional compatibility changes, and the limits of the validation.
 
 The stable MCP v1 SDK currently declares the vulnerable `@hono/node-server` 1.x range even though
 this project uses only its stdio transport. The lockfile explicitly resolves that unused HTTP

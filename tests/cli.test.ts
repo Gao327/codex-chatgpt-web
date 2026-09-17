@@ -275,7 +275,7 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
     mkdirSync(join(devHome, "runtime"), { recursive: true });
     writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
     writeFileSync(descriptorPath, `${JSON.stringify({
-      version: 2,
+      version: 3,
       kind: "codex-web-gpt-launcher",
       profile: "development",
       pid: process.pid,
@@ -332,7 +332,7 @@ test("DEV setup accepts explicit browser-interaction flags and preserves manual 
     mkdirSync(join(devHome, "runtime"), { recursive: true });
     writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
     writeFileSync(descriptorPath, `${JSON.stringify({
-      version: 2,
+      version: 3,
       kind: "codex-web-gpt-launcher",
       profile: "development",
       pid: process.pid,
@@ -405,7 +405,7 @@ test("browser check uses metadata-only launcher liveness in Zero Risk", async ()
     mkdirSync(join(appHome, "runtime"), { recursive: true });
     writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
     writeFileSync(descriptorPath, `${JSON.stringify({
-      version: 2,
+      version: 3,
       kind: "codex-web-gpt-launcher",
       profile: "production",
       pid: process.pid,
@@ -506,7 +506,7 @@ test("authorized launcher uninstall does not re-probe an already stopped full ru
   writeFileSync(helperScript, "module.exports = {};\n");
   writeFileSync(runtimeKeyFile, "test-key\n");
   writeFileSync(descriptorPath, `${JSON.stringify({
-    version: 2,
+    version: 3,
     kind: "codex-web-gpt-launcher",
     profile: "production",
     pid: process.pid,

@@ -359,6 +359,7 @@ class BrowserHost {
     this.selectedTabId = "home";
     this.manualOperation = null;
     this.loginOperation = null;
+    this.destroyed = false;
     this.sessionRefreshOperation = null;
     this.cloudflareChallengeRecovery = null;
     this.cloudflareChallengeRecoveryArmed = true;
@@ -517,6 +518,15 @@ class BrowserHost {
 
   selectedTurnTab() {
     return this.turnTabs.get(this.selectedTabId) || null;
+  }
+
+  automationSurface(surfaceId) {
+    if (browserInteractionModeFor(this) !== "automatic") return null;
+    if (surfaceId === this.surfaceId) return this.view?.webContents;
+    for (const tab of this.turnTabs.values()) {
+      if (tab.surfaceId === surfaceId) return tab.view.webContents;
+    }
+    return null;
   }
 
   async createTurnTab(traceId, helperPid, conversationKey, connectorIdentity) {
@@ -2660,6 +2670,7 @@ class BrowserHost {
   async waitForAuthenticated(timeoutMs = 180_000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (this.destroyed) throw new Error("ChatGPT login cancelled because the browser was closed");
       if (this.authNavigationError) {
         const error = this.authNavigationError;
         this.authNavigationError = null;
@@ -2779,7 +2790,9 @@ class BrowserHost {
   }
 
   async withManualOperation(name, action) {
+    if (this.destroyed) throw new Error("ChatGPT browser is closed");
     await this.ready();
+    if (this.destroyed) throw new Error("ChatGPT browser is closed");
     if (this.activeTraceId) {
       throw new Error(`ChatGPT browser is running Codex turn ${this.activeTraceId}`);
     }
@@ -2804,7 +2817,7 @@ class BrowserHost {
 
   writeDescriptor() {
     const descriptor = {
-      version: 2,
+      version: 3,
       kind: "codex-web-gpt-launcher",
       profile: this.profile,
       pid: process.pid,
@@ -2828,6 +2841,7 @@ class BrowserHost {
   }
 
   destroy() {
+    this.destroyed = true;
     try {
       const current = JSON.parse(fs.readFileSync(this.descriptorPath, "utf8"));
       if (current.pid === process.pid) fs.rmSync(this.descriptorPath, { force: true });

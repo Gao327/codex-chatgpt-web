@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { AppConfig, SubagentProtocol } from "./config";
 import { atomicWriteFile, expandUserPath, getConfigDir } from "./config";
+import { localApiPath } from "./local-api";
 
 export const MANAGED_COMMENT = "# Managed by codex-chatgpt-web; `codex-chatgpt-web uninstall` restores prior values.";
 export const MANAGED_ROUTE_COMMENT =
@@ -263,7 +264,7 @@ export function getCodexJournalRecoveryPath(): string {
 }
 
 export function routeUrl(config: AppConfig): string {
-  return `http://${config.host}:${config.port}/v1`;
+  return `http://${config.host}:${config.port}${localApiPath(config)}`;
 }
 
 export function sha256(value: string | Uint8Array): string {

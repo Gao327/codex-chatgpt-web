@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadConfig } from "../src/config";
+import { routeUrl } from "../src/codex-integration-shared";
+import { redactLocalApiUrl } from "../src/local-api";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
 
 const codexArg = process.argv.slice(2).find(argument => !argument.startsWith("--"));
@@ -34,12 +36,12 @@ const bundled = spawnSync(codex, ["debug", "models", "--bundled"], {
   timeout: 15_000,
 });
 if (bundled.status !== 0) {
-  throw new Error(`Could not read bundled Codex models: ${bundled.error?.message || bundled.stderr}`);
+  throw new Error(redactLocalApiUrl(`Could not read bundled Codex models: ${bundled.error?.message || bundled.stderr}`));
 }
 
 const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-live-subagents-"));
 const codexHome = join(root, "codex");
-mkdirSync(codexHome, { recursive: true });
+mkdirSync(codexHome, { recursive: true, mode: 0o700 });
 const catalogPath = join(root, "models.json");
 const catalogConfig = structuredClone(runtimeConfig);
 catalogConfig.subagentProtocol = "compatibility-v1";
@@ -48,7 +50,7 @@ writeFileSync(
   `${JSON.stringify(augmentNativeModelCatalog(JSON.parse(bundled.stdout), catalogConfig))}\n`,
 );
 
-const bridgeBaseUrl = `http://${runtimeConfig.host}:${runtimeConfig.port}/v1`;
+const bridgeBaseUrl = routeUrl(runtimeConfig);
 writeFileSync(join(codexHome, "config.toml"), [
   'model = "chatgpt-web/medium"',
   'model_provider = "live_bridge"',
@@ -68,7 +70,7 @@ writeFileSync(join(codexHome, "config.toml"), [
   "multi_agent = true",
   "multi_agent_v2 = false",
   "",
-].join("\n"));
+].join("\n"), { mode: 0o600 });
 
 const expectedVersion = (JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
   version?: unknown;
@@ -128,7 +130,8 @@ function responseItems(entries: RolloutRecord[]): Record<string, unknown>[] {
 }
 
 function compactOutput(value: string): string {
-  return value.length <= 8_000 ? value : value.slice(-8_000);
+  const redacted = redactLocalApiUrl(value);
+  return redacted.length <= 8_000 ? redacted : redacted.slice(-8_000);
 }
 
 try {
@@ -213,7 +216,7 @@ try {
 
   if (failures.length > 0) {
     throw new Error(
-      `${failures.join("; ")}\nCodex stdout:\n${compactOutput(stdout)}\nCodex stderr:\n${compactOutput(stderr)}`,
+      `${redactLocalApiUrl(failures.join("; "))}\nCodex stdout:\n${compactOutput(stdout)}\nCodex stderr:\n${compactOutput(stderr)}`,
     );
   }
   process.stdout.write(

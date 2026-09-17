@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Troubleshooting guide
-    url: https://github.com/miuuyy/codex-chatgpt-web/blob/main/TROUBLESHOOTING.md
+    url: https://github.com/Gao327/codex-chatgpt-web/blob/main/TROUBLESHOOTING.md
     about: Resolve common setup, routing, sign-in, model, MCP, rate-limit, image, and streaming failures first.
   - name: Questions and usage discussions
     url: https://github.com/miuuyy/codex-chatgpt-web/discussions

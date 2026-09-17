@@ -27,14 +27,58 @@ function Test-IsFullyQualifiedWindowsPath {
   return $Path -match '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))'
 }
 
-$Repository = if ($env:CODEX_WEB_GPT_REPOSITORY) { $env:CODEX_WEB_GPT_REPOSITORY } else { "miuuyy/codex-chatgpt-web" }
-if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
-  throw "Invalid GitHub repository: $Repository"
+function Invoke-ForkDownload {
+  param(
+    [Parameter(Mandatory = $true)][string]$Url,
+    [string]$OutFile,
+    [int]$TimeoutSec = 60,
+    [switch]$Asset
+  )
+  $CurrentUrl = $Url
+  for ($Hop = 0; $Hop -le 1; $Hop++) {
+    # HttpWebRequest also supports Windows PowerShell 5.1. Redirects are checked
+    # before issuing another request, including redirects after a repository move.
+    $Request = [System.Net.HttpWebRequest]::Create($CurrentUrl)
+    $Request.AllowAutoRedirect = $false
+    $Request.Timeout = $TimeoutSec * 1000
+    $Request.ReadWriteTimeout = $TimeoutSec * 1000
+    $Request.UserAgent = "codex-web-gpt-fork-installer"
+    $Response = $Request.GetResponse()
+    try {
+      $Status = [int]$Response.StatusCode
+      if ($Status -eq 200) {
+        $Stream = $Response.GetResponseStream()
+        try {
+          if ($OutFile) {
+            $File = [System.IO.File]::Create($OutFile)
+            try { $Stream.CopyTo($File) } finally { $File.Dispose() }
+            return
+          }
+          $Reader = New-Object System.IO.StreamReader($Stream)
+          try { return $Reader.ReadToEnd() } finally { $Reader.Dispose() }
+        } finally { $Stream.Dispose() }
+      }
+      if ($Asset -and $Hop -eq 0 -and $Status -in @(301, 302, 303, 307, 308)) {
+        $Location = [string]$Response.Headers["Location"]
+        if ($Location -cnotmatch '^https://release-assets\.githubusercontent\.com/github-production-release-asset/1357573628/[A-Za-z0-9_-]+(?:\?[^\s#]*)?$') {
+          throw "Refusing a release redirect outside Gao327/codex-chatgpt-web"
+        }
+        $CurrentUrl = $Location
+        continue
+      }
+      throw "Fork download failed with HTTP $Status; repository and further redirects are forbidden"
+    } finally { $Response.Dispose() }
+  }
+}
+
+$Repository = "Gao327/codex-chatgpt-web"
+if ($env:CODEX_WEB_GPT_REPOSITORY -and $env:CODEX_WEB_GPT_REPOSITORY -cne $Repository) {
+  throw "Updates are locked to $Repository; repository overrides are forbidden"
 }
 $Version = $env:CODEX_WEB_GPT_VERSION
 if (-not $Version) {
   $Release = Invoke-WithRetry -Label "Resolving the latest release" -Operation {
-    Invoke-RestMethod "https://api.github.com/repos/$Repository/releases/latest" -TimeoutSec 60
+    Invoke-ForkDownload -Url "https://api.github.com/repos/$Repository/releases/latest" | ConvertFrom-Json
   }
   $Version = [string]$Release.tag_name
 }
@@ -59,11 +103,11 @@ try {
   $Checksums = Join-Path $Temp "checksums.txt"
   $null = Invoke-WithRetry -Label "Downloading $Asset" -Operation {
     Remove-Item $Installer -Force -ErrorAction SilentlyContinue
-    Invoke-WebRequest "$BaseUrl/$Asset" -OutFile $Installer -TimeoutSec 900 -UseBasicParsing
+    Invoke-ForkDownload -Url "$BaseUrl/$Asset" -OutFile $Installer -TimeoutSec 900 -Asset
   }
   $null = Invoke-WithRetry -Label "Downloading checksums.txt" -Operation {
     Remove-Item $Checksums -Force -ErrorAction SilentlyContinue
-    Invoke-WebRequest "$BaseUrl/checksums.txt" -OutFile $Checksums -TimeoutSec 60 -UseBasicParsing
+    Invoke-ForkDownload -Url "$BaseUrl/checksums.txt" -OutFile $Checksums -TimeoutSec 60 -Asset
   }
   $ExpectedLine = Get-Content $Checksums | Where-Object { $_ -match "\s$([regex]::Escape($Asset))$" } | Select-Object -First 1
   if (-not $ExpectedLine) { throw "checksums.txt has no entry for $Asset" }

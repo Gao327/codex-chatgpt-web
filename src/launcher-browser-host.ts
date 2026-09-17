@@ -37,7 +37,7 @@ export class LauncherManualTurnFailedError extends Error {
 }
 
 export interface LauncherBrowserHostDescriptor {
-  version: 2;
+  version: 3;
   kind: typeof LAUNCHER_BROWSER_HOST_KIND;
   profile: LauncherBrowserHostProfile;
   pid: number;
@@ -82,7 +82,7 @@ function assertDescriptorShape(value: unknown): LauncherBrowserHostDescriptor {
     throw new Error("Launcher browser descriptor is not an object");
   }
   const descriptor = value as Partial<LauncherBrowserHostDescriptor>;
-  if (descriptor.version !== 2 || descriptor.kind !== LAUNCHER_BROWSER_HOST_KIND) {
+  if (descriptor.version !== 3 || descriptor.kind !== LAUNCHER_BROWSER_HOST_KIND) {
     throw new Error("Launcher browser descriptor has an unsupported identity or version");
   }
   if (descriptor.profile !== "production" && descriptor.profile !== "development") {
@@ -126,7 +126,7 @@ function assertDescriptorShape(value: unknown): LauncherBrowserHostDescriptor {
     throw new Error("Launcher browser descriptor has an invalid creation time");
   }
   return {
-    version: 2,
+    version: 3,
     kind: LAUNCHER_BROWSER_HOST_KIND,
     profile: descriptor.profile,
     pid: descriptor.pid!,
@@ -168,7 +168,11 @@ async function assertCdpReady(descriptor: LauncherBrowserHostDescriptor, timeout
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${descriptor.endpoint}/json/version`, { signal: controller.signal });
+    const response = await fetch(`${descriptor.endpoint}/json/version`, {
+      signal: controller.signal,
+      headers: { authorization: `Bearer ${descriptor.control.token}` },
+      redirect: "error",
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json() as Record<string, unknown>;
     if (typeof body.webSocketDebuggerUrl !== "string" || !body.webSocketDebuggerUrl.startsWith("ws://127.0.0.1:")) {
@@ -243,7 +247,14 @@ export async function connectLauncherBrowserHost(
   await assertCdpReady(descriptor, Math.min(timeoutMs, 5_000));
   let browser: Browser;
   try {
-    browser = await chromium.connectOverCDP(descriptor.endpoint, { timeout: timeoutMs });
+    const ownedSurface = surfaceId ?? descriptor.surfaceId;
+    if (!/^[A-Za-z0-9_-]{32}$/.test(ownedSurface)) throw new Error("Invalid browser surface identity");
+    const endpoint = `${descriptor.endpoint.replace(/^http:/, "ws:")}/devtools/browser/${ownedSurface}`;
+    browser = await chromium.connectOverCDP(endpoint, {
+      timeout: timeoutMs,
+      noDefaults: true,
+      headers: { authorization: `Bearer ${descriptor.control.token}` },
+    });
   } catch (error) {
     throw new Error(`Could not connect Playwright to the launcher browser: ${error instanceof Error ? error.message : String(error)}`);
   }
