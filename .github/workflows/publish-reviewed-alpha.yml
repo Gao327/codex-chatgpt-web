@@ -93,8 +93,16 @@ jobs:
         run: |
           test "$(gh release view "$RELEASE_TAG" --repo Gao327/codex-chatgpt-web --json isDraft --jq .isDraft)" = true
           mapfile -d '' release_files < <(find release-assets -maxdepth 1 -type f -print0)
-          gh release upload "$RELEASE_TAG" "${release_files[@]}" \
-            --repo Gao327/codex-chatgpt-web --clobber
+          for file in "${release_files[@]}"; do
+            for attempt in 1 2 3; do
+              if gh release upload "$RELEASE_TAG" "$file" \
+                --repo Gao327/codex-chatgpt-web --clobber; then
+                break
+              fi
+              test "$attempt" -lt 3
+              sleep "$((attempt * 5))"
+            done
+          done
           gh api "repos/Gao327/codex-chatgpt-web/releases/$REVIEWED_RELEASE_ID" > uploaded-release.json
           python3 - <<'PY'
           import hashlib, json
