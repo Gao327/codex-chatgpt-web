@@ -12,7 +12,10 @@ const windows = [];
 app.whenReady().then(async () => {
   for (let index = 0; index < 2; index++) {
     const window = new BrowserWindow({
-      show: false,
+      width: 800,
+      height: 600,
+      // A mapped window is required for screenshot capture under Linux/Xvfb.
+      show: true,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
     windows.push(window);
