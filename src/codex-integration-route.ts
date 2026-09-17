@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { redactLocalApiUrl } from "./local-api";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
   MANAGED_COMMENT,
@@ -241,7 +242,7 @@ export function installRoute(
   const previous = assignments(document.lines);
   if (previous.openai_base_url.present && !replaceExistingRoute) {
     throw new Error(
-      `Codex already configures model routing (openai_base_url=${JSON.stringify(previous.openai_base_url.value)}). `
+      `Codex already configures model routing (openai_base_url=${JSON.stringify(redactLocalApiUrl(previous.openai_base_url.value ?? ""))}). `
       + "Rerun with --replace-codex-route to replace it reversibly. "
       + "Check whether another Codex extension or wrapper (for example, OpenCodex or Headroom) is replacing the bridge port.",
     );

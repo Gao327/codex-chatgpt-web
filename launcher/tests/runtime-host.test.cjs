@@ -586,11 +586,27 @@ test("launcher connects an inactive installed route", async () => {
   assert.deepEqual(fixture.calls, ["route status", "route connect", "route status"]);
 });
 
-test("launcher leaves an already connected route unchanged", async () => {
+test("launcher revalidates an already connected route so authentication upgrades are applied", async () => {
   const fixture = bridgeFixture({ active: true });
   const result = await fixture.host.connectBridgeRoute();
   assert.equal(result.active, true);
-  assert.deepEqual(fixture.calls, ["route status"]);
+  assert.equal(result.changed, true);
+  assert.deepEqual(fixture.calls, ["route status", "route connect", "route status"]);
+});
+
+test("a failed revalidation of an active route preserves the running installation", async () => {
+  const fixture = bridgeFixture({ active: true });
+  fixture.host.run = async (_name, args) => {
+    const action = args.join(" ");
+    fixture.calls.push(action);
+    if (action === "route status") {
+      return { stdout: JSON.stringify({ installed: true, active: true, errors: [] }) };
+    }
+    throw new Error("Route validation failed before changing configuration");
+  };
+  await assert.rejects(fixture.host.connectBridgeRoute(), /Route validation failed/);
+  assert.deepEqual(fixture.calls, ["route status", "route connect"]);
+  assert.equal(fixture.host.currentOperation(), null);
 });
 
 test("bridge connection rejects a route command that did not reach the requested state", async () => {

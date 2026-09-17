@@ -918,7 +918,6 @@ class RuntimeHost {
     try {
       const current = await this.bridgeStatus(name);
       if (!current.installed) throw new Error("Install the Codex integration before connecting the bridge route");
-      if (current.active) return current;
       try {
         const connected = await this.run(name, ["route", "connect"], {
           embedded: true,
@@ -933,6 +932,9 @@ class RuntimeHost {
         }
         return result;
       } catch (error) {
+        // Revalidating an existing route can fail without changing it. Preserve that running
+        // installation; cleanup below applies only to a connection that started disconnected.
+        if (current.active) throw error;
         let cleanupError;
         try { await this.supervisor.stopForSetup(); } catch (caught) { cleanupError = caught; }
         if (!cleanupError) throw error;

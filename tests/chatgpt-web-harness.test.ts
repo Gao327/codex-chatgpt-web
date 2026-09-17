@@ -284,6 +284,112 @@ function canonicalJson(value: unknown): string {
 }
 
 describe("ChatGPT outer-native harness v4", () => {
+  test("rejects restrictive tool_choice before creating browser or broker authority", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-tool-choice-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-tool-choice-${Date.now()}`,
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: true, solAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    worker.run = async () => {
+      browserStarts += 1;
+      throw new Error("A rejected request must not start a browser");
+    };
+    const adapter = createChatGptWebAdapter(provider);
+    try {
+      const choices = [
+        "none",
+        "required",
+        { type: "function", name: "exec_command" },
+        { type: "custom", name: "exec" },
+        { type: "allowed_tools", mode: "auto", tools: [{ type: "function", name: "exec_command" }] },
+        { type: "allowed_tools", mode: "required", tools: [{ type: "function", name: "exec_command" }] },
+        { type: "allowed_tools", mode: "auto", tools: [] },
+        // The parser currently normalizes hosted choices to auto; the raw restriction must survive.
+        { type: "web_search_preview" },
+      ];
+      for (const choice of choices) {
+        const request = rawWireRequest(environmentXml);
+        (request._rawBody as Record<string, unknown>).tool_choice = choice;
+        request.options.toolChoice = parseRequest({
+          model: CHATGPT_WEB_MODEL_ID, input: "Inspect the project", tool_choice: choice,
+        }).options.toolChoice;
+        const events: AdapterEvent[] = [];
+        await adapter.runTurn!(request, { headers: new Headers() }, event => events.push(event));
+        expect(events.filter(event => event.type !== "heartbeat")).toEqual([expect.objectContaining({
+          type: "error", status: 400, errorType: "invalid_request_error",
+          code: "unsupported_tool_choice", retryable: false,
+        })]);
+      }
+      expect(browserStarts).toBe(0);
+      if (process.platform !== "win32") expect(existsSync(socketPath)).toBeFalse();
+    } finally {
+      worker.run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("a stricter tool_choice cannot replay a retained auto tool call", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-tool-choice-replay-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-tool-choice-replay-${Date.now()}`,
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: true, solAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    let browserStarts = 0;
+    worker.run = async turn => {
+      browserStarts += 1;
+      const prepared = await turn.prepare();
+      try {
+        const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+        if (!token) throw new Error("turn token missing from compiled prompt");
+        const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+        await invokeAfterBrowserBoundary(turn, () => callTurnBroker(socketPath, {
+          method: "invoke", bindingId: claimed.bindingId, wireName: "exec", freeform: true,
+          input: "text(await tools.exec_command({cmd:'echo test'}))",
+        }));
+        turn.onTextDelta("Finished");
+        return "Finished";
+      } finally {
+        prepared.release();
+      }
+    };
+    const adapter = createChatGptWebAdapter(provider);
+    const initial = rawWireRequest(environmentXml);
+    const firstEvents: AdapterEvent[] = [];
+    try {
+      await adapter.runTurn!(initial, { headers: new Headers() }, event => firstEvents.push(event));
+      expect(firstEvents.some(event => event.type === "tool_call_start" && event.name === "exec")).toBeTrue();
+
+      for (const choice of ["none", { allowedTools: ["exec_command"], mode: "auto" }] as const) {
+        const restricted = structuredClone(initial);
+        restricted.options.toolChoice = choice === "none"
+          ? choice : { allowedTools: [...choice.allowedTools], mode: choice.mode };
+        const events: AdapterEvent[] = [];
+        await adapter.runTurn!(restricted, { headers: new Headers() }, event => events.push(event));
+        expect(events.some(event => event.type === "tool_call_start")).toBeFalse();
+        expect(events.at(-1)).toMatchObject({ type: "error", code: "unsupported_tool_choice" });
+      }
+
+      // An unchanged auto request still replays the authorized round without a second browser.
+      const replayEvents: AdapterEvent[] = [];
+      initial.options.toolChoice = "auto";
+      await adapter.runTurn!(initial, { headers: new Headers() }, event => replayEvents.push(event));
+      expect(replayEvents.filter(event => event.type !== "heartbeat"))
+        .toEqual(firstEvents.filter(event => event.type !== "heartbeat"));
+      expect(browserStarts).toBe(1);
+    } finally {
+      worker.run = originalRun;
+      chatGptTurnSessions.clear();
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test("extracts authoritative environment, tool registry, and turn identity from the Codex wire envelope", () => {
     const request = rawWireRequest(environmentXml);
     expect(extractChatGptTurnEnvironment(request)).toEqual({

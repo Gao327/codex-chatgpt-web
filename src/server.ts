@@ -9,6 +9,7 @@ import {
   cancelStructuredCompactionTrace,
 } from "./adapters/chatgpt-web/compaction-handoff";
 import { chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-error";
+import { chatGptWebToolChoiceError } from "./adapters/chatgpt-web/tool-choice";
 import {
   CHATGPT_TURN_REVISION_CONFLICT_MESSAGE,
   extractChatGptTurnIdentity,
@@ -20,6 +21,7 @@ import { providerConfig } from "./config";
 import { AsyncEventQueue } from "./event-queue";
 import { readJsonRequestBody } from "./http-body";
 import { httpStatusFromTerminalError } from "./lib/errors";
+import { localApiPath } from "./local-api";
 import { createHash } from "node:crypto";
 import { augmentNativeModelCatalog } from "./model-catalog";
 import {
@@ -476,6 +478,12 @@ export async function responseRequest(
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }
+  const toolChoiceError = chatGptWebToolChoiceError(parsed);
+  if (toolChoiceError) {
+    return Response.json({
+      error: { type: toolChoiceError.errorType, code: toolChoiceError.code, message: toolChoiceError.message },
+    }, { status: toolChoiceError.status });
+  }
   if (parsed._opaqueMultiAgentV2Payload) {
     return formatErrorResponse(
       400,
@@ -763,12 +771,35 @@ export function startServer(
     const actual = Buffer.from(header);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
+  const apiPath = localApiPath(config);
+  const expectedApiPath = Buffer.from(apiPath);
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
+      // The bridge is a native local API. Browser origins and attacker-controlled Host headers
+      // must never reach either model execution or lifecycle control, even with a leaked URL.
+      const expectedHost = `${config.host}:${server.port}`;
+      if (req.headers.get("host") !== expectedHost || url.host !== expectedHost
+        || req.headers.has("origin") || req.headers.has("sec-fetch-site")) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      if (url.pathname.startsWith("/bridge/") || url.pathname === "/v1" || url.pathname.startsWith("/v1/")) {
+        const candidate = Buffer.from(url.pathname.slice(0, apiPath.length));
+        if (candidate.length !== expectedApiPath.length || !timingSafeEqual(candidate, expectedApiPath)
+          || (url.pathname.length > apiPath.length && url.pathname[apiPath.length] !== "/")) {
+          return formatErrorResponse(401, "authentication_error", "Local bridge authentication required; rerun Setup to install the authenticated Codex route");
+        }
+        if (req.method === "POST"
+          && req.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+          return formatErrorResponse(415, "invalid_request_error", "Content-Type must be application/json");
+        }
+        // Never pass the local capability to upstream requests, adapters, or their diagnostics.
+        url.pathname = `/v1${url.pathname.slice(apiPath.length)}`;
+        req = new Request(url, req);
+      }
       if (req.method === "GET" && url.pathname === "/healthz") {
         return Response.json({
           status: "ok",

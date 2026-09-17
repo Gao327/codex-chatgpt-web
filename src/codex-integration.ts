@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AppConfig } from "./config";
 import { atomicWriteFile, getConfigPath, loadConfig, saveConfig } from "./config";
+import { redactLocalApiUrl } from "./local-api";
 import { installCodexInterruptHook, installCodexInterruptHookCommand } from "./codex-interrupt-hook";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
@@ -377,6 +378,12 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
   assertJournalTargetsConfig(existing, getCodexConfigPath());
   if (!existsSync(existing.configPath)) throw new Error(`Codex config is missing: ${existing.configPath}`);
   const current = readFileSync(existing.configPath, "utf8");
+  const config = existsSync(getConfigPath()) ? loadConfig() : undefined;
+  if (/^http:\/\/127\.0\.0\.1:\d+\/v1\/?$/.test(existing.installed.openai_base_url)
+    || (config && existing.installed.openai_base_url !== routeUrl(config))) {
+    installCodexIntegration({ ...(config ?? loadConfig()), subagentProtocol: journalProtocol(existing) });
+    return { changed: true, active: true };
+  }
   if (existing.version === 10 && existing.active) {
     verifyInstalledRoute(current, existing);
     return { changed: false, active: true };
@@ -486,7 +493,7 @@ export function inspectCodexIntegration(): {
   active: boolean;
   configPath: string;
   routeUrl?: string;
-  journal?: AnyCodexIntegrationJournal;
+  journal?: Pick<AnyCodexIntegrationJournal, "version">;
   errors: string[];
 } {
   const journal = readJournal();
@@ -521,9 +528,9 @@ export function inspectCodexIntegration(): {
       : Boolean(journal),
     configPath: getCodexConfigPath(),
     ...(journal?.version === 3 || journal?.version === 4 || journal?.version === 5 || journal?.version === 6 || journal?.version === 7 || journal?.version === 8 || journal?.version === 9 || journal?.version === 10
-      ? { routeUrl: journal.installed.openai_base_url }
+      ? { routeUrl: redactLocalApiUrl(journal.installed.openai_base_url) }
       : {}),
-    ...(journal ? { journal } : {}),
+    ...(journal ? { journal: { version: journal.version } } : {}),
     errors,
   };
 }
