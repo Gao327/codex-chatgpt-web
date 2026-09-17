@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import type { Page } from "playwright-core";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, browserDiagnosticIncludesScreenshot, chatGptConnectorAttachmentMode, chatGptEffortSelectionRequired, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess } from "../src/adapters/chatgpt-web/browser-worker";
@@ -1537,7 +1538,7 @@ test("connector verification persists ordered browser checkpoints when selection
     ]);
     expect(checkpoints.at(-1)).toMatchObject({
       traceId: "verify_contract_trace",
-      error: "connector proof failed",
+      error: "Error",
       state: { composer: { visibleCount: 1, textChars: [6] } },
     });
   } finally {
@@ -2933,12 +2934,82 @@ test("browser stage diagnostics use safe bounded artifact names", () => {
   expect(browserDiagnosticCheckpoint("x".repeat(200))).toHaveLength(80);
 });
 
-test("routine browser diagnostics avoid screenshots unless full capture is requested", () => {
+test("browser diagnostics require explicit screenshot opt-in even when a turn fails", () => {
   expect(browserDiagnosticIncludesScreenshot("send-ready", false)).toBeFalse();
   expect(browserDiagnosticIncludesScreenshot("response-visible", false)).toBeFalse();
-  expect(browserDiagnosticIncludesScreenshot("response-stalled-30s", false)).toBeTrue();
-  expect(browserDiagnosticIncludesScreenshot("turn-failed", false)).toBeTrue();
+  expect(browserDiagnosticIncludesScreenshot("response-stalled-30s", false)).toBeFalse();
+  expect(browserDiagnosticIncludesScreenshot("turn-failed", false)).toBeFalse();
   expect(browserDiagnosticIncludesScreenshot("send-ready", true)).toBeTrue();
+  expect(browserDiagnosticIncludesScreenshot("response-stalled-30s", true)).toBeTrue();
+  expect(browserDiagnosticIncludesScreenshot("turn-failed", true)).toBeTrue();
+});
+
+test("browser checkpoint artifacts omit private page and error content unless diagnostics are enabled", async () => {
+  const previous = process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS;
+  const privateText = "private-account@example.test confidential conversation";
+  const privateUrl = "https://chatgpt.com/c/private-conversation?account=private-account";
+  const diagnosticRoot = mkdtempSync(join(tmpdir(), "cgw-private-diagnostics-"));
+  const verify = (ChatGptBrowserWorker.prototype as unknown as {
+    verifyConnectorExclusive(traceId: string): Promise<string>;
+  }).verifyConnectorExclusive;
+  const element = {
+    isConnected: true, tagName: "DIV", textContent: privateText, innerHTML: `<div>${privateText}</div>`,
+    getAttribute: (key: string) => key === "role" ? "dialog" : null,
+    getBoundingClientRect: () => ({ x: 1, y: 2, width: 300, height: 100 }),
+  };
+  try {
+    for (const enabled of [false, true]) {
+      if (enabled) process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS = "1";
+      else delete process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS;
+      for (const stateFails of [false, true]) {
+        const traceId = `privacy_${enabled}_${stateFails}`;
+        const failure = new Error(privateText);
+        const page = {
+          screenshot: async () => Buffer.from(privateText),
+          evaluate: async (evaluate: Function, args: unknown) => {
+            if (stateFails) throw failure;
+            return runInNewContext(`(${evaluate.toString()})(args)`, {
+              args, location: { href: privateUrl }, innerWidth: 800, innerHeight: 600,
+              getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+              document: { title: privateText, body: element, querySelectorAll: () => [element] },
+            });
+          },
+        };
+        await expect(verify.call({
+          config: { appName: "Codex Native2", browserDiagnosticsPath: diagnosticRoot },
+          ensurePage: async () => page,
+          prepareTemporaryChatSurface: async () => {},
+          selectConnector: async () => { throw failure; },
+        }, traceId)).rejects.toBe(failure);
+        const directory = join(diagnosticRoot, readdirSync(diagnosticRoot).find(name => name.startsWith(`${traceId}-`))!);
+        const files = readdirSync(directory);
+        const encoded = files.map(file => readFileSync(join(directory, file), "utf8")).join("\n");
+        const captured = JSON.parse(readFileSync(join(directory, files.find(file => file.endsWith("failed.json"))!), "utf8"));
+        expect(files.some(file => file.endsWith(".png"))).toBe(enabled);
+        expect(encoded.includes(privateText)).toBe(enabled);
+        expect(captured.error).toBe(enabled ? privateText : "Error");
+        if (stateFails) {
+          expect(captured.captureErrors.state).toBe(enabled ? privateText : "Error");
+          expect(captured.state).toBeUndefined();
+        } else {
+          expect(captured.state.viewport).toEqual({ width: 800, height: 600 });
+          expect(captured.state.bodyTextChars).toBe(privateText.length);
+          expect(captured.state.composer).toMatchObject({ visibleCount: 1, textChars: [privateText.length] });
+          expect(captured.state.turns.assistant[0]).toEqual({ textChars: privateText.length, htmlChars: element.innerHTML.length });
+          expect(captured.state.overlays[0].rect).toEqual({ x: 1, y: 2, width: 300, height: 100 });
+          expect(captured.state.url).toBe(enabled ? privateUrl : undefined);
+          expect(captured.state.title).toBe(enabled ? privateText : undefined);
+          expect(captured.state.overlays[0].text).toBe(enabled ? privateText : undefined);
+          expect(captured.state.menus[0].text).toBe(enabled ? privateText : undefined);
+          expect(encoded.includes(privateUrl)).toBe(enabled);
+        }
+      }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS;
+    else process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS = previous;
+    rmSync(diagnosticRoot, { recursive: true, force: true });
+  }
 });
 
 test("visible DOM trace interleaves statuses and explicit intermediate commentary", () => {

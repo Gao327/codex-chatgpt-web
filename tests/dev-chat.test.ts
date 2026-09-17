@@ -377,7 +377,6 @@ test("DEV driver uses shared browser methods and its own broker while an unrelat
       ...provider.chatgptWeb,
       brokerSocketPath: config.brokerSocketPath,
       threadEnvironmentStatePath: join(stateRoot, "thread-environments.json"),
-      lunaCheckpointStatePath: join(stateRoot, "luna-checkpoints.json"),
     },
   });
   const worker = ChatGptBrowserWorker.forProvider(devProvider(providerConfig(config)));

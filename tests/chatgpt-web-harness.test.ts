@@ -19,6 +19,7 @@ import {
 } from "../src/adapters/chatgpt-web/native-compaction-control";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, withoutSupersededModelSwitchContracts } from "../src/adapters/chatgpt-web/prompt";
 import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-policy";
+import { hashChatGptLunaAnswer } from "../src/adapters/chatgpt-web/rolling-checkpoint";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { ChatGptExternalTurnProgress, ChatGptMirroredTurnProgress, chatGptExternalProgressIsLive, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
@@ -1333,8 +1334,57 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("Luna checkpoint capture ignores a legacy disk path for every storage mode", async () => {
+    for (const storage of [undefined, false, true]) {
+      const checkpointPath = join(tempRoot, `private-luna-checkpoint-${String(storage)}.json`);
+      const provider: CodexProviderConfig = {
+        adapter: "chatgpt-web",
+        baseUrl: `browser://chatgpt-luna-private-checkpoint-${String(storage)}-${Date.now()}`,
+        chatgptWeb: {
+          localToolsEnabled: false,
+          solAvailable: false,
+          proAvailable: false,
+          // Runtime callers may still carry old configuration fields after an upgrade.
+          ...{ lunaCheckpointStatePath: checkpointPath },
+        },
+      };
+      const worker = ChatGptBrowserWorker.forProvider(provider);
+      const originalRun = worker.run.bind(worker);
+      let captured = false;
+      worker.run = async turn => {
+        const prepared = await turn.prepare();
+        try {
+          expect(turn.captureLunaCheckpoint).toBeTrue();
+          const answer = "Completed a private task.";
+          turn.onLunaCheckpoint!({
+            checkpoint: { version: 2, summary: "Private task content must stay in memory." },
+            answerHash: hashChatGptLunaAnswer(answer),
+          });
+          captured = true;
+          turn.onTextDelta(answer);
+          return answer;
+        } finally {
+          prepared.release();
+        }
+      };
+      try {
+        const request = rawWireRequest(environmentXml);
+        request.modelId = "gpt-5.6-luna";
+        request.options.reasoning = "low";
+        if (storage !== undefined) (request._rawBody as Record<string, unknown>).store = storage;
+        const events: AdapterEvent[] = [];
+        await createChatGptWebAdapter(provider).runTurn!(request, { headers: new Headers() }, event => events.push(event));
+        expect(captured).toBeTrue();
+        expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+        expect(events.some(event => event.type === "error")).toBeFalse();
+        expect(existsSync(checkpointPath)).toBeFalse();
+      } finally {
+        worker.run = originalRun;
+      }
+    }
+  });
+
   test("a missing optional Luna checkpoint completes once without repeating the browser turn", async () => {
-    const checkpointPath = join(tempRoot, `missing-luna-checkpoint-${Date.now()}.json`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
       baseUrl: `browser://chatgpt-luna-missing-checkpoint-${Date.now()}`,
@@ -1342,7 +1392,6 @@ describe("ChatGPT outer-native harness v4", () => {
         localToolsEnabled: false,
         solAvailable: false,
         proAvailable: false,
-        lunaCheckpointStatePath: checkpointPath,
       },
     };
     const worker = ChatGptBrowserWorker.forProvider(provider);
@@ -1378,7 +1427,6 @@ describe("ChatGPT outer-native harness v4", () => {
         expect(events.some(event => event.type === "error")).toBeFalse();
       }
       expect(browserStarts).toBe(1);
-      expect(existsSync(checkpointPath)).toBeFalse();
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     }

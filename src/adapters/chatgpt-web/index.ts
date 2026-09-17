@@ -371,11 +371,7 @@ export function createChatGptWebAdapter(
       ? resolve(expandUserPath(provider.chatgptWeb.threadEnvironmentStatePath))
       : undefined,
   );
-  const lunaCheckpointStore = new ChatGptLunaCheckpointStore(
-    provider.chatgptWeb?.lunaCheckpointStatePath
-      ? resolve(expandUserPath(provider.chatgptWeb.lunaCheckpointStatePath))
-      : undefined,
-  );
+  const lunaCheckpointStore = new ChatGptLunaCheckpointStore();
   const currentUsageInput = (parsed: CodexParsedRequest): CodexParsedRequest => (
     parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID && !parsed._compactionRequest
       ? lunaCheckpointStore.apply(parsed).parsed

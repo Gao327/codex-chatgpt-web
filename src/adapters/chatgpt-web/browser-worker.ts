@@ -1653,10 +1653,12 @@ export function browserDiagnosticCheckpoint(value: string): string {
 }
 
 export function browserDiagnosticIncludesScreenshot(
-  checkpoint: string,
+  _checkpoint: string,
   captureAll = process.env.CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS === "1",
 ): boolean {
-  return captureAll || checkpoint === "response-stalled-30s" || checkpoint === "turn-failed";
+  // Screenshots can contain account details and unredacted conversation content, including
+  // failed turns. Capturing them always requires the explicit diagnostics opt-in.
+  return captureAll;
 }
 
 function privateDirectory(path: string): void {
@@ -1677,6 +1679,14 @@ function pruneBrowserDiagnostics(root: string): void {
   }
 }
 
+function browserDiagnosticError(error: unknown, includeContent: boolean): string {
+  if (includeContent) return redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error));
+  // Error messages can quote page content. Keep only known, non-content error categories.
+  return error instanceof Error && /^(?:Error|TypeError|RangeError|SyntaxError|TimeoutError|AbortError|ChatGptBrowserObservationTimeoutError)$/.test(error.name)
+    ? error.name
+    : "Error";
+}
+
 class ChatGptBrowserDiagnostics {
   private readonly directory: string;
   private sequence = 0;
@@ -1690,6 +1700,7 @@ class ChatGptBrowserDiagnostics {
   }
 
   async capture(page: Page, checkpoint: string, error?: unknown): Promise<void> {
+    const includePageContent = browserDiagnosticIncludesScreenshot(checkpoint);
     try {
       if (!this.initialized) {
         privateDirectory(this.root);
@@ -1699,9 +1710,8 @@ class ChatGptBrowserDiagnostics {
       }
       const sequence = String(++this.sequence).padStart(2, "0");
       const stem = `${sequence}-${browserDiagnosticCheckpoint(checkpoint)}`;
-      const includeScreenshot = browserDiagnosticIncludesScreenshot(checkpoint);
       const [screenshotResult, stateResult] = await Promise.allSettled([
-        includeScreenshot
+        includePageContent
           ? page.screenshot({ animations: "disabled", caret: "hide", timeout: 5_000, type: "png" })
           : Promise.resolve(undefined),
         withChatGptBrowserObservationTimeout(page.evaluate(({
@@ -1709,6 +1719,7 @@ class ChatGptBrowserDiagnostics {
           effortControlSelector,
           effortItemSelector,
           assistantTurnSelector,
+          includePageContent,
         }) => {
           const rendered = (element: Element): boolean => {
             const candidate = element as HTMLElement;
@@ -1739,14 +1750,13 @@ class ChatGptBrowserDiagnostics {
                 dataState: element.getAttribute("data-state"),
                 dataHighlighted: element.getAttribute("data-highlighted"),
                 rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-                text: boundedText(element),
+                ...(includePageContent ? { text: boundedText(element) } : {}),
               };
             });
           const composers = [...document.querySelectorAll(composerSelector)].filter(rendered);
           const assistantTurns = [...document.querySelectorAll(assistantTurnSelector)].filter(rendered);
           return {
-            url: location.href,
-            title: document.title,
+            ...(includePageContent ? { url: location.href, title: document.title } : {}),
             viewport: { width: innerWidth, height: innerHeight },
             surfaceId: (globalThis as typeof globalThis & { __CODEX_WEB_GPT_SURFACE_ID__?: unknown })
               .__CODEX_WEB_GPT_SURFACE_ID__ ?? null,
@@ -1775,6 +1785,7 @@ class ChatGptBrowserDiagnostics {
           effortControlSelector: CHATGPT_EFFORT_CONTROL_SELECTOR,
           effortItemSelector: CHATGPT_EFFORT_ITEM_SELECTOR,
           assistantTurnSelector: CHATGPT_ASSISTANT_TURN_SELECTOR,
+          includePageContent,
         })),
       ]);
       const capturedAt = new Date().toISOString();
@@ -1784,15 +1795,11 @@ class ChatGptBrowserDiagnostics {
       const captureErrors = Object.fromEntries([
         ...(screenshotResult.status === "rejected" ? [[
           "screenshot",
-          redactChatGptUiDiagnostic(
-            screenshotResult.reason instanceof Error ? screenshotResult.reason.message : String(screenshotResult.reason),
-          ),
+          browserDiagnosticError(screenshotResult.reason, includePageContent),
         ]] : []),
         ...(stateResult.status === "rejected" ? [[
           "state",
-          redactChatGptUiDiagnostic(
-            stateResult.reason instanceof Error ? stateResult.reason.message : String(stateResult.reason),
-          ),
+          browserDiagnosticError(stateResult.reason, includePageContent),
         ]] : []),
       ]);
       atomicWriteFile(join(this.directory, `${stem}.json`), `${JSON.stringify({
@@ -1801,7 +1808,7 @@ class ChatGptBrowserDiagnostics {
         traceId: this.traceId,
         checkpoint,
         ...(error !== undefined ? {
-          error: redactChatGptUiDiagnostic(error instanceof Error ? error.message : String(error)),
+          error: browserDiagnosticError(error, includePageContent),
         } : {}),
         ...(stateResult.status === "fulfilled" ? { state: stateResult.value } : {}),
         ...(Object.keys(captureErrors).length > 0 ? { captureErrors } : {}),
@@ -1817,7 +1824,7 @@ class ChatGptBrowserDiagnostics {
       console.warn(
         `[chatgpt-web] browser diagnostic capture failed trace=${this.traceId}`
         + ` checkpoint=${browserDiagnosticCheckpoint(checkpoint)}:`
-        + ` ${captureError instanceof Error ? captureError.message : String(captureError)}`,
+        + ` ${browserDiagnosticError(captureError, includePageContent)}`,
       );
     }
   }
