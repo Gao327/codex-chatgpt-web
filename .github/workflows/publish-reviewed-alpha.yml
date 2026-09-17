@@ -1,0 +1,118 @@
+name: Publish reviewed Mac and Windows alpha
+
+on:
+  push:
+    branches: [release/fork-packages]
+    paths: [.github/workflows/publish-reviewed-alpha.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'Gao327/codex-chatgpt-web'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: v5.0.2-alpha.1
+      SOURCE_SHA: 533d0cc8797e6bbb76f6e02c2d791eed72b358fd
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 533d0cc8797e6bbb76f6e02c2d791eed72b358fd
+          persist-credentials: false
+      - name: Require the reviewed source and successful native jobs
+        run: |
+          test "$GITHUB_REPOSITORY" = "Gao327/codex-chatgpt-web"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$RELEASE_TAG" = "v$(jq -r .version package.json)"
+          test "$(gh api repos/Gao327/codex-chatgpt-web/commits/$RELEASE_TAG --jq .sha)" = "$SOURCE_SHA"
+          test "$(gh api repos/Gao327/codex-chatgpt-web/actions/runs/35268268688 --jq .head_sha)" = "$SOURCE_SHA"
+          for job in 105360800772 105360800990; do
+            gh api "repos/Gao327/codex-chatgpt-web/actions/jobs/$job" \
+              --jq 'select(.run_id == 35268268688 and .conclusion == "success") | .id' > native-job.txt
+            test "$(cat native-job.txt)" = "$job"
+          done
+          test "$(gh release view "$RELEASE_TAG" --repo Gao327/codex-chatgpt-web --json isDraft --jq .isDraft)" = true
+          test "$(gh release view "$RELEASE_TAG" --repo Gao327/codex-chatgpt-web --json isPrerelease --jq .isPrerelease)" = true
+          release_id="$(gh api repos/Gao327/codex-chatgpt-web/releases --jq '.[] | select(.tag_name == "v5.0.2-alpha.1") | .id')"
+          [[ "$release_id" =~ ^[0-9]+$ ]]
+          echo "REVIEWED_RELEASE_ID=$release_id" >> "$GITHUB_ENV"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - run: bun run licenses
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-macos-15
+          run-id: 35268268688
+          github-token: ${{ github.token }}
+          path: release-assets
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-windows-latest
+          run-id: 35268268688
+          github-token: ${{ github.token }}
+          path: release-assets
+      - name: Assemble only the successful platform artifacts and their notices
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('release-assets')
+          for file in list(root.rglob('*')):
+              if file.is_file() and file.parent != root:
+                  destination = root / file.name
+                  if destination.exists():
+                      raise SystemExit(f'Duplicate asset: {file.name}')
+                  file.rename(destination)
+          expected = {
+              'codex-web-gpt-5.0.2-alpha.1-mac-arm64.dmg',
+              'codex-web-gpt-5.0.2-alpha.1-mac-arm64.zip',
+              'codex-web-gpt-5.0.2-alpha.1-win-x64.exe',
+              'codex-chatgpt-web-darwin-arm64.tar.gz',
+              'codex-chatgpt-web-windows-amd64.zip',
+          }
+          actual = {p.name for p in root.iterdir() if p.is_file()}
+          if actual != expected:
+              raise SystemExit(f'Unexpected platform assets: {actual ^ expected}')
+          for source in ['LICENSE', 'LICENSES/Bun-1.4.0.md', 'dist/THIRD_PARTY_NOTICES.txt',
+                         'scripts/install.sh', 'scripts/install-launcher.sh', 'scripts/install-launcher.ps1']:
+              shutil.copy2(source, root / Path(source).name)
+          PY
+          cd release-assets
+          find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum | sed 's#  \./#  #' > ../checksums.txt
+          mv ../checksums.txt .
+      - name: Upload to the draft and verify every remote digest before publication
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --repo Gao327/codex-chatgpt-web --json isDraft --jq .isDraft)" = true
+          mapfile -d '' release_files < <(find release-assets -maxdepth 1 -type f -print0)
+          gh release upload "$RELEASE_TAG" "${release_files[@]}" \
+            --repo Gao327/codex-chatgpt-web --clobber
+          gh api "repos/Gao327/codex-chatgpt-web/releases/$REVIEWED_RELEASE_ID" > uploaded-release.json
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path('release-assets')
+          release = json.loads(Path('uploaded-release.json').read_text())
+          assert release['draft'] and release['prerelease']
+          remote = {a['name']: a for a in release['assets']}
+          local = {p.name: p for p in root.iterdir() if p.is_file()}
+          assert remote.keys() == local.keys(), 'Release assets differ from the selected files'
+          for name, file in local.items():
+              with file.open('rb') as stream:
+                  digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+              assert remote[name]['digest'] == f'sha256:{digest}', f'Hash mismatch: {name}'
+              assert remote[name]['size'] == file.stat().st_size, f'Size mismatch: {name}'
+          print(f'VERIFIED_UPLOAD_SHA256_OK {len(local)} assets')
+          PY
+      - name: Publish the verified alpha without changing the stable update channel
+        run: |
+          gh release edit "$RELEASE_TAG" --repo Gao327/codex-chatgpt-web \
+            --draft=false --prerelease --latest=false
