@@ -234,6 +234,20 @@ test("release does not publish demo or screenshot assets", () => {
   assert.doesNotMatch(release, /release-assets\/[^\n]*(?:demo|screenshot)/i);
 });
 
+test("release publication is restricted to the reviewed fork", () => {
+  const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
+  for (const job of ["build", "publish"]) {
+    assert.match(release, new RegExp(`  ${job}:\\n    if: github\\.repository == 'Gao327/codex-chatgpt-web'\\n`));
+  }
+  assert.match(release, /test "\$GITHUB_REPOSITORY" = "Gao327\/codex-chatgpt-web"/);
+  const releaseCommands = release.match(/gh release [\s\S]*?(?=\n\s*(?:gh release|else|fi|done|published_manifest|local_manifest_digest|remote_manifest_digest|test|release_flags)|$)/g);
+  assert.ok(releaseCommands?.length, "the publication workflow must have release commands");
+  for (const command of releaseCommands) {
+    assert.match(command, /--repo "Gao327\/codex-chatgpt-web"/);
+  }
+  assert.doesNotMatch(release, /--repo "\$GITHUB_REPOSITORY"/);
+});
+
 test("Windows packages embed the checksummed Bun baseline runtime for CPUs without AVX2", () => {
   const builder = fs.readFileSync(path.join(repositoryRoot, "scripts", "build-runtime-bundle.ts"), "utf8");
   const baseline = fs.readFileSync(

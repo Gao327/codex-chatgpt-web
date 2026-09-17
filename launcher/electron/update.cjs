@@ -6,10 +6,11 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
 
-const REPOSITORY = "miuuyy/codex-chatgpt-web";
+const REPOSITORY = "Gao327/codex-chatgpt-web";
+// Pin the fork's identity too: a same-host redirect must not select another repository's asset.
+const REPOSITORY_ID = "1357573628";
 const RELEASE_API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
 const USER_AGENT = "codex-web-gpt-launcher-updater";
-const MAX_REDIRECTS = 5;
 
 function parseVersion(value) {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(value || "").trim());
@@ -65,21 +66,43 @@ function expectedChecksum(contents, assetName) {
 function validateReleaseAssetUrl(raw, version, assetName) {
   const url = new URL(raw);
   const expectedPath = `/${REPOSITORY}/releases/download/v${version}/${assetName}`;
-  if (url.protocol !== "https:" || url.hostname !== "github.com" || url.pathname !== expectedPath) {
+  if (url.origin !== "https://github.com" || url.username || url.password
+    || url.search || url.hash || url.pathname !== expectedPath) {
     throw new Error(`GitHub returned an unexpected release asset URL for ${assetName}`);
   }
   return url.toString();
 }
 
-function request(url, redirects = 0) {
-  return new Promise((resolve, reject) => {
-    if (redirects > MAX_REDIRECTS) {
-      reject(new Error(`Too many redirects while downloading ${url}`));
-      return;
+function validateUpdateRequestUrl(raw, redirected) {
+  const url = new URL(raw);
+  if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash) {
+    throw new Error("Refusing an untrusted update URL");
+  }
+  if (redirected) {
+    const prefix = `/github-production-release-asset/${REPOSITORY_ID}/`;
+    if (url.hostname !== "release-assets.githubusercontent.com"
+      || !url.pathname.startsWith(prefix)
+      || !/^[A-Za-z0-9-]+$/.test(url.pathname.slice(prefix.length))) {
+      throw new Error("Refusing an update redirect outside the trusted fork's release storage");
     }
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") {
-      reject(new Error(`Refusing non-HTTPS update URL: ${parsed.protocol}`));
+  } else if (url.href !== RELEASE_API_URL) {
+    const prefix = `/${REPOSITORY}/releases/download/`;
+    if (url.origin !== "https://github.com" || url.search
+      || !url.pathname.startsWith(prefix)
+      || !/^v[0-9A-Za-z.-]+\/[0-9A-Za-z._-]+$/.test(url.pathname.slice(prefix.length))) {
+      throw new Error("Refusing an update URL outside the trusted fork");
+    }
+  }
+  return url;
+}
+
+function request(url, redirected = false) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try {
+      parsed = validateUpdateRequestUrl(url, redirected);
+    } catch (error) {
+      reject(error);
       return;
     }
     const req = https.get(parsed, {
@@ -90,8 +113,17 @@ function request(url, redirects = 0) {
     }, (response) => {
       if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
         response.resume();
-        const next = new URL(response.headers.location, parsed).toString();
-        request(next, redirects + 1).then(resolve, reject);
+        // Metadata never redirects. Assets may take only GitHub's single hop to this fork's CDN path.
+        if (redirected || parsed.href === RELEASE_API_URL) {
+          reject(new Error("Refusing an unexpected update redirect"));
+          return;
+        }
+        try {
+          const next = new URL(response.headers.location, parsed).toString();
+          request(next, true).then(resolve, reject);
+        } catch (error) {
+          reject(error);
+        }
         return;
       }
       if (response.statusCode !== 200) {
