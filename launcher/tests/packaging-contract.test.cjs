@@ -235,7 +235,7 @@ test("release does not publish demo or screenshot assets", () => {
 });
 
 test("release publication is restricted to the reviewed fork", () => {
-  const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
+  const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8").replace(/\r\n/g, "\n");
   for (const job of ["build", "publish"]) {
     assert.match(release, new RegExp(`  ${job}:\\n    if: github\\.repository == 'Gao327/codex-chatgpt-web'\\n`));
   }
