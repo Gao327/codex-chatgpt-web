@@ -38,7 +38,7 @@ function descriptorFile(
   roots.push(root);
   const path = join(root, "launcher-browser.json");
   writeFileSync(path, `${JSON.stringify({
-    version: 2,
+    version: 3,
     kind: LAUNCHER_BROWSER_HOST_KIND,
     profile,
     pid: process.pid,
@@ -74,6 +74,14 @@ test("launcher descriptor is owner-only, loopback-only, and process-bound", () =
     chmodSync(path, 0o644);
     expect(() => readLauncherBrowserHostDescriptor(path)).toThrow("unsafe permissions");
   }
+});
+
+test("launcher rejects legacy descriptors that expose unauthenticated debugging", () => {
+  const path = descriptorFile();
+  const legacy = JSON.parse(readFileSync(path, "utf8"));
+  legacy.version = 2;
+  writeFileSync(path, JSON.stringify(legacy));
+  expect(() => readLauncherBrowserHostDescriptor(path)).toThrow("unsupported identity or version");
 });
 
 test("launcher turn control sends authenticated lifecycle events", async () => {
@@ -276,11 +284,12 @@ test("launcher session verification uses the authenticated control channel inste
   }
 });
 
-test("launcher liveness verification checks only owned process and loopback CDP metadata", async () => {
+test("launcher liveness verification authenticates loopback CDP metadata", async () => {
   let requests = 0;
   const server = createServer((request, response) => {
     requests += 1;
     expect(request.url).toBe("/json/version");
+    expect(request.headers.authorization).toBe("Bearer launcher-control-token-0123456789abcdefghijklmnop");
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({
       webSocketDebuggerUrl: "ws://127.0.0.1:39120/devtools/browser/test",

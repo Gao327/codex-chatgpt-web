@@ -977,14 +977,6 @@ test("failed private-transfer cleanup also discards an otherwise imported passke
   assert.equal(resets, 1);
 });
 
-test("launcher quit remains gated through an active embedded-browser operation", () => {
-  const source = fs.readFileSync(require.resolve("../electron/main.cjs"), "utf8");
-  assert.match(
-    source,
-    /runtimeHost\?\.currentOperation\(\) \|\| browserHost\?\.currentOperation\(\)/,
-  );
-});
-
 test("logout clears only the owned ChatGPT session and returns to the sign-in surface", async () => {
   const calls = [];
   let currentUrl = "https://chatgpt.com/?temporary-chat=true";

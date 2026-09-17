@@ -1231,6 +1231,130 @@ test("passkey Continue is delivered only to the active owned login child", async
   assert.throws(() => fixture.continuePasskeyLogin(), /No passkey sign-in is waiting/);
 });
 
+function cancellablePasskeyFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-passkey-cancel-"));
+  const host = new RuntimeHost({
+    app: { getPath: () => root },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    browserDescriptorPath: path.join(root, "launcher-browser.json"),
+    supervisor: { readConfig: () => null },
+  });
+  host.passkeyChromeExecutable = () => "/unused-test-chrome";
+  host.launcherControlEnvironment = () => ({});
+  return { host, root, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+test("passkey cancellation leaves setup and other owned processes alone", async () => {
+  const fixture = hostFor(null).host;
+  let signals = 0;
+  fixture.active = "core-setup";
+  fixture.activeChild = { exitCode: null, signalCode: null, kill() { signals += 1; } };
+  assert.equal(await fixture.cancelPasskeyLogin(), false);
+  assert.equal(signals, 0);
+  assert.equal(fixture.currentOperation(), "core-setup");
+  fixture.active = null;
+  fixture.activeChild = null;
+  assert.equal(await fixture.cancelPasskeyLogin(), false);
+});
+
+test("passkey cancellation waits for capture cleanup and refuses another capture", async () => {
+  const { host, root, cleanup } = cancellablePasskeyFixture();
+  let releaseRun;
+  const signals = [];
+  const child = {
+    exitCode: null,
+    signalCode: null,
+    kill(signal) {
+      signals.push(signal);
+      this.signalCode = signal;
+      return true;
+    },
+  };
+  host.run = async () => {
+    host.active = "passkey-login";
+    host.activeChild = child;
+    try {
+      await new Promise(resolve => { releaseRun = resolve; });
+      return { code: 0 };
+    } finally {
+      host.active = null;
+      host.activeChild = null;
+    }
+  };
+  const capture = host.capturePasskeyLogin();
+  const captureRejected = assert.rejects(capture, /Passkey sign-in was cancelled/);
+  try {
+    await assert.rejects(host.capturePasskeyLogin(), /Another launcher operation is active: passkey-login/);
+    assert.equal(fs.readdirSync(path.join(root, "passkey-login")).length, 1);
+    let cancelled = false;
+    const cancellation = host.cancelPasskeyLogin().then(result => { cancelled = true; return result; });
+    const repeatedCancellation = host.cancelPasskeyLogin();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(signals, ["SIGTERM"]);
+    assert.equal(cancelled, false, "an exit signal alone must not report capture cleanup complete");
+    assert.equal(host.currentOperation(), "passkey-login");
+    releaseRun();
+    assert.equal(await cancellation, true);
+    assert.equal(await repeatedCancellation, true);
+    assert.equal(host.currentOperation(), null);
+    assert.equal(host.passkeyCapture, null);
+    assert.equal(host.passkeyContinuationRequested, false);
+    assert.deepEqual(fs.readdirSync(path.join(root, "passkey-login")), []);
+    await captureRejected;
+  } finally {
+    releaseRun();
+    await captureRejected;
+    cleanup();
+  }
+});
+
+for (const ignoresTermination of [false, true]) {
+  test(`passkey cancellation ${ignoresTermination ? "forces an unresponsive" : "gracefully stops a"} temporary login process`, {
+    skip: process.platform === "win32" ? "POSIX signal behavior; Windows cancellation uses taskkill" : false,
+    timeout: 12_000,
+  }, async () => {
+    const { host, root, cleanup } = cancellablePasskeyFixture();
+    let signalReady;
+    const ready = new Promise(resolve => { signalReady = resolve; });
+    host.logger.info = (event, detail) => {
+      if (event === "runtime.stdout" && detail.line === "ready") signalReady();
+    };
+    host.command = () => ({
+      executable: process.execPath,
+      args: ["-e", `
+        process.on("SIGTERM", () => { ${ignoresTermination ? "" : "process.exit(0);"} });
+        process.stdout.write("ready\\n");
+        setInterval(() => {}, 1000);
+      `],
+      cwd: root,
+    });
+    host.run = (name, args, options) => RuntimeHost.prototype.run.call(host, name, args, {
+      ...options,
+      embedded: false,
+      timeoutMs: 9_000,
+    });
+    const capture = host.capturePasskeyLogin();
+    const captureRejected = assert.rejects(capture, /Passkey sign-in was cancelled/);
+    const child = host.activeChild;
+    try {
+      await ready;
+      assert.equal(await host.cancelPasskeyLogin(), true);
+      assert.equal(child.signalCode, ignoresTermination ? "SIGKILL" : null);
+      assert.equal(child.exitCode, ignoresTermination ? null : 0);
+      assert.equal(host.currentOperation(), null);
+      assert.deepEqual(fs.readdirSync(path.join(root, "passkey-login")), []);
+      await captureRejected;
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        process.kill(-child.pid, "SIGKILL");
+      }
+      await captureRejected;
+      cleanup();
+    }
+  });
+}
+
 test("passkey sign-in is rejected outside macOS even if IPC is invoked directly", () => {
   const fixture = hostFor(null).host;
   fixture.platform = "win32";

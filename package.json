@@ -49,6 +49,7 @@
     "launcher:audit": "bun run --cwd launcher audit",
     "launcher:typecheck": "bun run --cwd launcher typecheck",
     "launcher:build": "bun run --cwd launcher build",
+    "launcher:smoke-browser": "node launcher/scripts/smoke-browser-transport.cjs",
     "launcher:test": "bun run --cwd launcher test",
     "verify": "bun run scripts/verify.ts"
   },

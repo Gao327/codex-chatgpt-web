@@ -187,6 +187,7 @@ class RuntimeHost {
     this.lifecycleOperation = null;
     this.cleanupEphemeralSecrets();
     this.passkeyContinuationRequested = false;
+    this.passkeyCapture = null;
     try {
       this.cleanupPasskeyTransfers();
     } catch (error) {
@@ -305,6 +306,9 @@ class RuntimeHost {
   }
 
   async capturePasskeyLogin() {
+    if (this.currentOperation() || this.passkeyCapture) {
+      throw new Error(`Another launcher operation is active: ${this.currentOperation() || "passkey-login"}`);
+    }
     this.cleanupPasskeyTransfers();
     const chrome = this.passkeyChromeExecutable();
     const parent = path.join(this.app.getPath("userData"), "passkey-login");
@@ -315,6 +319,13 @@ class RuntimeHost {
     const storageStatePath = path.join(transferRoot, "storage-state.json");
     const markerPath = `${storageStatePath}.verified.json`;
     const cleanup = async () => fs.rmSync(transferRoot, { recursive: true, force: true });
+    let finishCapture;
+    const capture = {
+      cancelled: false,
+      cancellation: null,
+      finished: new Promise(resolve => { finishCapture = resolve; }),
+    };
+    this.passkeyCapture = capture;
     this.passkeyContinuationRequested = false;
     try {
       await this.run("passkey-login", [
@@ -332,6 +343,7 @@ class RuntimeHost {
         successMessage: "Passkey session captured for private Launcher verification",
         timeoutMs: PASSKEY_LOGIN_TIMEOUT_MS,
       });
+      if (capture.cancelled) throw new Error("Passkey sign-in was cancelled");
       const stateStat = fs.lstatSync(storageStatePath);
       if (!stateStat.isFile() || stateStat.size < 1 || stateStat.size > MAX_PASSKEY_STATE_FILE_BYTES) {
         throw new Error("Passkey sign-in returned an invalid storage-state file");
@@ -353,10 +365,65 @@ class RuntimeHost {
       return { storageState: JSON.parse(fs.readFileSync(storageStatePath, "utf8")), cleanup };
     } catch (error) {
       await cleanup();
-      throw error;
+      throw capture.cancelled ? new Error("Passkey sign-in was cancelled") : error;
     } finally {
       this.passkeyContinuationRequested = false;
+      if (this.passkeyCapture === capture) this.passkeyCapture = null;
+      finishCapture();
     }
+  }
+
+  async cancelPasskeyLogin() {
+    const capture = this.passkeyCapture;
+    if (!capture || (this.active && this.active !== "passkey-login")) return false;
+    if (capture.cancellation) return capture.cancellation;
+    const child = this.active === "passkey-login" ? this.activeChild : null;
+    capture.cancelled = true;
+    capture.cancellation = new Promise((resolve, reject) => {
+      let settled = false;
+      let graceTimeout;
+      let forceTimeout;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(graceTimeout);
+        clearTimeout(forceTimeout);
+        if (error) reject(error);
+        else resolve(true);
+      };
+      capture.finished.then(() => {
+        if (settled) return;
+        try {
+          // The helper can exit before its browser descendants. Clean up its owned
+          // process group, then wait for capture's finally before reporting idle.
+          terminateOwnedProcessTree(child, "SIGKILL");
+          if (child && child.exitCode === null && child.signalCode === null) {
+            throw new Error("Passkey sign-in process did not exit after cancellation");
+          }
+          finish();
+        } catch (error) {
+          finish(error);
+        }
+      });
+      try {
+        terminateOwnedProcessTree(child);
+      } catch (error) {
+        finish(error);
+        return;
+      }
+      graceTimeout = setTimeout(() => {
+        try {
+          terminateOwnedProcessTree(child, "SIGKILL");
+        } catch (error) {
+          finish(error);
+          return;
+        }
+        forceTimeout = setTimeout(() => {
+          finish(new Error("Passkey sign-in did not finish cleanup after forced cancellation"));
+        }, 2_000);
+      }, 5_000);
+    });
+    return capture.cancellation;
   }
 
   command(args) {

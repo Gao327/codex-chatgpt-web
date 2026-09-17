@@ -112,6 +112,7 @@ try {
   if (marker.ok !== true
     || marker.packaged !== true
     || marker.runtimeVerified !== true
+    || marker.signedOutQuitVerified !== true
     || marker.version !== expectedVersion
     || marker.platform !== process.platform) {
     throw new Error(`Unexpected packaged launcher marker: ${JSON.stringify(marker)}`);

@@ -37,7 +37,7 @@ test("renderer zoom scales the shell without moving or zooming the native ChatGP
 test("closing the launcher follows the persisted background-runtime preference", () => {
   assert.match(
     electronMain,
-    /if \(stateStore\.read\(\)\.keepRunningOnClose && tray\) window\.hide\(\);\s*else void requestQuit\(\);/,
+    /if \(current\.coreSetupComplete === true && current\.keepRunningOnClose && tray\) window\.hide\(\);\s*else void requestQuit\(\);/,
   );
   assert.match(appSource, /setPreference\("keepRunningOnClose", checked\)/);
 });
@@ -84,19 +84,27 @@ test("normal shutdown persists the ChatGPT session before closing browser views"
 test("packaged runtime is verified before launcher browser surfaces can bind ports", () => {
   const start = electronMain.indexOf("async function start()");
   const runtimeValidation = electronMain.indexOf("installedRuntimeRoot = runtimeRootProvider();", start);
-  const cdpPortAllocation = electronMain.indexOf("cdpPort = await findFreePort();", start);
+  const cdpPortAllocation = electronMain.indexOf("browserDebugging = await new AuthenticatedCdpServer({", start);
   const windowCreation = electronMain.indexOf("mainWindow = createWindow({", start);
   const controlServerStart = electronMain.indexOf("browserControl = await new BrowserControlServer({", start);
   const browserReady = electronMain.indexOf("await browserHost.ready();", start);
 
   assert.ok(runtimeValidation > start, "startup must eagerly verify the packaged runtime");
   for (const [surface, position] of [
-    ["CDP port allocation", cdpPortAllocation],
+    ["authenticated browser transport", cdpPortAllocation],
     ["launcher window", windowCreation],
     ["browser control server", controlServerStart],
     ["embedded browser", browserReady],
   ]) {
     assert.ok(position > runtimeValidation, `${surface} must start only after runtime verification`);
+  }
+});
+
+test("launcher removes inherited Chromium remote-debugging switches before startup", () => {
+  for (const name of ["remote-debugging-port", "remote-debugging-address", "remote-debugging-pipe"]) {
+    const removal = electronMain.indexOf(`app.commandLine.removeSwitch("${name}")`);
+    assert.ok(removal >= 0 && removal < electronMain.indexOf("async function start()"));
+    assert.ok(!electronMain.includes(`app.commandLine.appendSwitch("${name}"`));
   }
 });
 
