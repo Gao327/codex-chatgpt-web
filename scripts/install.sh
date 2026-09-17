@@ -6,7 +6,7 @@ if [ -n "${CODEX_CHATGPT_WEB_REPOSITORY:-}" ] && [ "$CODEX_CHATGPT_WEB_REPOSITOR
   echo "Updates are locked to $REPOSITORY; repository overrides are forbidden" >&2
   exit 1
 fi
-VERSION="${CODEX_CHATGPT_WEB_VERSION:-5.0.1}"
+VERSION="${CODEX_CHATGPT_WEB_VERSION:-5.0.2-alpha.1}"
 BIN_DIR="${CODEX_CHATGPT_WEB_BIN_DIR:-$HOME/.local/bin}"
 LIB_DIR="${CODEX_CHATGPT_WEB_LIB_DIR:-$HOME/.local/lib/codex-chatgpt-web}"
 DOC_DIR="${CODEX_CHATGPT_WEB_DOC_DIR:-$HOME/.local/share/doc/codex-chatgpt-web}"
