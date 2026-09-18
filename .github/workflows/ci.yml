@@ -55,6 +55,10 @@ jobs:
         run: bun run launcher/scripts/prepare-linux-appimage-tools.cjs
       - run: bun run verify
       - run: bun run app:package
+        env:
+          # These hosted CI jobs have no signing credentials. Allow the packager's
+          # explicit ad hoc identity on macOS PRs, then verify the archive signature.
+          CSC_FOR_PULL_REQUEST: ${{ runner.os == 'macOS' && 'true' || 'false' }}
       - name: Verify Linux AppImage ABI on current Arch
         if: runner.os == 'Linux'
         run: |

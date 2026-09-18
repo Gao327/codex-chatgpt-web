@@ -101,7 +101,12 @@ async function main() {
     assert.equal(await other.inputValue("#text"), "");
     await page.setInputFiles("#file", { name: "fixture.txt", mimeType: "text/plain", buffer: Buffer.from("non-sensitive fixture") });
     assert.equal(await page.locator("#file").evaluate(element => element.files[0].name), "fixture.txt");
-    assert.ok((await page.screenshot()).length > 0);
+    const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    assert.deepEqual(viewport, { width: 800, height: 600 }, "The transport fixture must expose a real renderer viewport");
+    const screenshot = await page.screenshot({ type: "png", scale: "css" });
+    assert.equal(screenshot.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    assert.deepEqual({ width: screenshot.readUInt32BE(16), height: screenshot.readUInt32BE(20) }, viewport,
+      "The authenticated transport must capture the complete renderer viewport");
     await browsers.shift().close();
     const reconnected = await chromium.connectOverCDP(`ws://127.0.0.1:${port}/devtools/browser/${"a".repeat(32)}`, {
       noDefaults: true, timeout: 10_000, headers: { authorization: `Bearer ${token}` },
