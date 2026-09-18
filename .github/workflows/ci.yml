@@ -55,6 +55,10 @@ jobs:
         run: bun run launcher/scripts/prepare-linux-appimage-tools.cjs
       - run: bun run verify
       - run: bun run app:package
+        env:
+          # These hosted CI jobs have no signing credentials. Allow the packager's
+          # explicit ad hoc identity on macOS PRs, then verify the archive signature.
+          CSC_FOR_PULL_REQUEST: ${{ runner.os == 'macOS' && 'true' || 'false' }}
       - name: Verify Linux AppImage ABI on current Arch
         if: runner.os == 'Linux'
         run: |
@@ -67,7 +71,11 @@ jobs:
         run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - name: Verify authenticated browser boundary on Linux
         if: runner.os == 'Linux'
-        run: xvfb-run -a bun run launcher:smoke-browser
+        run: |
+          # This disposable runner needs user namespaces for Electron's sandbox.
+          # Keep Chromium sandboxing enabled; do not pass --no-sandbox.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          xvfb-run -a bun run launcher:smoke-browser
       - name: Verify authenticated browser boundary
         if: runner.os != 'Linux'
         run: bun run launcher:smoke-browser

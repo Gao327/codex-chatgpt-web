@@ -6,7 +6,7 @@ const vm = require("node:vm");
 const { BrowserHost } = require("../electron/browser-host.cjs");
 
 // Execute the production handlers with fake resources; never start an account or user service.
-const source = fs.readFileSync(path.join(__dirname, "../electron/main.cjs"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../electron/main.cjs"), "utf8").replace(/\r\n/g, "\n");
 const quitSource = source.slice(source.indexOf("async function requestQuit()"), source.indexOf("async function start()"));
 
 function quitFixture(browserOperation, runtimeOperation = null) {
