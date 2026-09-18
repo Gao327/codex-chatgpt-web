@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { randomBytes } = require("node:crypto");
 const { once } = require("node:events");
 const fs = require("node:fs");
@@ -7,6 +7,53 @@ const os = require("node:os");
 const path = require("node:path");
 const { chromium } = require("playwright-core");
 const electron = require("electron");
+const createEffortPickerFixture = require("../tests/fixtures/effort-picker.cjs");
+
+async function smokeEffortPicker(page, scratch) {
+  const bundledSession = path.join(scratch, "chatgpt-session.cjs");
+  const build = spawnSync("bun", [
+    "build", path.join(__dirname, "../../src/chatgpt-session.ts"),
+    "--target", "node", "--format", "cjs", "--outfile", bundledSession,
+  ], { encoding: "utf8", timeout: 20_000 });
+  if (build.error || build.status !== 0) {
+    throw new Error(`Could not bundle the effort-picker regression: ${build.error?.message || build.stderr}`);
+  }
+  const { detectChatGptAccountCapabilities } = require(bundledSession);
+  async function inspectFixture(options) {
+    await page.setContent(createEffortPickerFixture(options));
+    let timer;
+    try {
+      return await Promise.race([
+        detectChatGptAccountCapabilities(page),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(
+            "Effort-picker regression timed out: the closed menu must recover through click and pointerdown",
+          )), 8_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  assert.deepEqual(await inspectFixture(), { solAvailable: true, proAvailable: true });
+  assert.deepEqual(await page.evaluate(() => window.effortFixture), {
+    clicks: 1, pointerdowns: 2, enters: 0, escapes: 3,
+  });
+  assert.equal(await page.locator("#effort-menu").isVisible(), false);
+  assert.equal(await page.locator("#effort-control").getAttribute("aria-expanded"), "false");
+  assert.equal(await page.locator('[role="slider"]').getAttribute("aria-valuenow"), "3");
+
+  assert.deepEqual(await inspectFixture({ ghost: false }), { solAvailable: true, proAvailable: true });
+  assert.deepEqual(await page.evaluate(() => window.effortFixture), {
+    clicks: 1, pointerdowns: 1, enters: 0, escapes: 1,
+  });
+  assert.equal(await page.locator("#effort-menu").isVisible(), false);
+
+  await assert.rejects(inspectFixture({ ghost: false, max: 6 }), /ChatGPT model controls are unavailable/);
+  assert.equal(await page.locator("#effort-menu").isVisible(), false);
+  assert.equal(await page.locator("#effort-control").getAttribute("aria-expanded"), "false");
+  console.log("EFFORT_PICKER_SMOKE_OK: normal and ghost activation; owned visible slider overrides hidden model rows; invalid range rejected; menus closed");
+}
 
 async function main() {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "codex-cdp-smoke-"));
@@ -62,6 +109,7 @@ async function main() {
     browsers.push(reconnected);
     assert.equal(await reconnected.contexts()[0].pages()[0].inputValue("#text"), "Only the first surface");
     console.log("AUTHENTICATED_BROWSER_SMOKE_OK: unauthorized access rejected; isolated surfaces, input, upload, screenshot, reconnect verified");
+    await smokeEffortPicker(reconnected.contexts()[0].pages()[0], scratch);
   } finally {
     await Promise.all(browsers.map(browser => browser.close().catch(() => {})));
     child.kill("SIGTERM");

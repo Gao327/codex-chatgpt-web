@@ -188,7 +188,7 @@ test("the new model rows cannot hide an authoritative five-step Pro effort slide
   const effortButton = {
     last() { return this; },
     isVisible: async () => true,
-    getAttribute: async () => "true",
+    getAttribute: async (name: string) => name === "aria-expanded" ? "true" : null,
   };
   const composerForm = {
     locator: () => effortButton,
@@ -204,6 +204,7 @@ test("the new model rows cannot hide an authoritative five-step Pro effort slide
     count: async () => 2,
   };
   const menu = {
+    filter() { return this; },
     last() { return this; },
     isVisible: async () => true,
     locator: () => efforts,
