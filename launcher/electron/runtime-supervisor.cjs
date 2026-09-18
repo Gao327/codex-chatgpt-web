@@ -1792,7 +1792,10 @@ class RuntimeSupervisor {
         if (health.active_http_turns === 0 && health.active_browser_turns === 0) return true;
         if (Date.now() >= deadline) {
           throw new Error(
-            `daemon has ${health.active_http_turns} active HTTP turn(s) and ${health.active_browser_turns} active browser turn(s)`,
+            `daemon has ${health.active_http_turns} active HTTP turn(s) and ${health.active_browser_turns} active browser turn(s).`
+            + " Finish or stop running Codex tasks before retrying; native Codex models also use this runtime."
+            + " If a request is stuck, use Settings > Cancel active Codex turn in Codex Web GPT, then retry."
+            + " Cancellation stops all active requests through this runtime.",
           );
         }
         await sleep(Math.min(DRAIN_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
